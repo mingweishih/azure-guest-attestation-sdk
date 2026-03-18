@@ -1,0 +1,23 @@
+# cargo-nextest configuration
+# https://nexte.st/docs/configuration/
+
+[store]
+# Directory for nextest artifacts (relative to workspace root)
+dir = "target/nextest"
+
+# ---------- Default profile ----------
+[profile.default]
+retries = 0
+# Kill stuck tests after 30s of no output, hard-kill after 2 periods
+slow-timeout = { period = "15s", terminate-after = 2 }
+# By default nextest runs each test as a separate process so parallel
+# execution "just works" even with the reference TPM singleton.
+fail-fast = true
+
+# ---------- CI profile ----------
+[profile.ci]
+retries = 2
+slow-timeout = { period = "30s", terminate-after = 2 }
+fail-fast = false
+# Produce JUnit XML for CI reporting
+# junit = { path = "target/nextest/ci/junit.xml" }

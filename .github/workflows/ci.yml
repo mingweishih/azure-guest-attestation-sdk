@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Format check (fast, single job)
+  # --------------------------------------------------------------------------
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # --------------------------------------------------------------------------
+  # Clippy lint (per-platform)
+  # --------------------------------------------------------------------------
+  clippy:
+    name: Clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # --------------------------------------------------------------------------
+  # Build + unit tests (no vTPM)
+  # --------------------------------------------------------------------------
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+
+  # --------------------------------------------------------------------------
+  # vTPM integration tests (needs vendored OpenSSL → needs Perl)
+  # --------------------------------------------------------------------------
+  vtpm-tests:
+    name: vTPM tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Perl is pre-installed on GitHub runners, but ensure Strawberry Perl
+      # is available on Windows for the vendored OpenSSL build.
+      - name: Install Strawberry Perl (Windows)
+        if: runner.os == 'Windows'
+        run: choco install strawberryperl --no-progress -y
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run vTPM tests (nextest)
+        run: cargo nextest run -p azure-guest-attestation-sdk --features vtpm-tests
+
+  # --------------------------------------------------------------------------
+  # MSRV check
+  # --------------------------------------------------------------------------
+  msrv:
+    name: MSRV (Rust 1.76)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.76
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace
+
+  # --------------------------------------------------------------------------
+  # Documentation build
+  # --------------------------------------------------------------------------
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps

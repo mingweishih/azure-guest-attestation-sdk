@@ -1,0 +1,137 @@
+NOTICES AND INFORMATION
+Do Not Translate or Localize
+
+This software incorporates material from third parties.
+Microsoft makes certain open source code available at
+https://3rdpartysource.microsoft.com, or you may send a check or money order for
+US $5.00 to:
+    Microsoft Corporation
+    Department CELA – Open Source Compliance
+    One Microsoft Way
+    Redmond, WA 98052-6399 USA
+
+Notwithstanding any other terms, you may reverse engineer this software to the
+extent required to debug changes to any libraries licensed under the GNU Lesser
+General Public License.
+
+================================================================================
+
+The Azure Guest Attestation SDK depends on the following third-party Rust crates.
+Each crate is listed with its license(s). Full license texts can be found at
+https://spdx.org/licenses/.
+
+────────────────────────────────────────────────────────────────────────────────
+MIT License
+────────────────────────────────────────────────────────────────────────────────
+
+The following crates are licensed under the MIT License:
+
+  bitfield-struct, bytes, generic-array, h2, http-body, hyper, matchers, mio,
+  nu-ansi-term, openssl-sys, sharded-slab, slab, strsim, synstructure, tokio,
+  tokio-native-tls, tokio-util, tower-service, tracing, tracing-attributes,
+  tracing-core, tracing-log, tracing-subscriber, try-lock, want, zmij
+
+────────────────────────────────────────────────────────────────────────────────
+MIT OR Apache-2.0
+────────────────────────────────────────────────────────────────────────────────
+
+The following crates are dual-licensed under the MIT License or the Apache
+License, Version 2.0:
+
+  aead, aes, anstream, anstyle, anstyle-parse, anstyle-query, anyhow, base64,
+  bitflags, block-buffer, cfg-if, cipher, clap, clap_builder, clap_derive,
+  clap_lex, colorchoice, cpufeatures, crypto-common, ctr, digest, displaydoc,
+  form_urlencoded, futures-channel, futures-core, futures-io, futures-sink,
+  futures-task, futures-util, getrandom, hashbrown, heck, hex, http, httparse,
+  httpdate, idna, inout, ipnet, is_terminal_polyfill, itoa, lazy_static, libc,
+  log, mime, native-tls, once_cell, opaque-debug, openssl-probe,
+  percent-encoding, ppv-lite86, proc-macro2, quote, rand, rand_chacha,
+  rand_core, regex-automata, regex-syntax, reqwest, serde, serde_core,
+  serde_derive, serde_json, sha1, sha2, smallvec, socket2, stable_deref_trait,
+  syn, thread_local, typenum, universal-hash, url
+
+  Also dual-licensed (MIT/Apache-2.0):
+  foreign-types, foreign-types-shared, hyper-tls, openssl-macros,
+  serde_urlencoded, tokio-rustls
+
+  Also dual-licensed (Apache-2.0 OR MIT):
+  aes-gcm, equivalent, ghash, idna_adapter, indexmap, pin-project-lite,
+  polyval, utf8_iter, utf8parse, fnv
+
+────────────────────────────────────────────────────────────────────────────────
+Apache-2.0 OR ISC OR MIT
+────────────────────────────────────────────────────────────────────────────────
+
+  hyper-rustls, rustls, rustls-pemfile, sct
+
+────────────────────────────────────────────────────────────────────────────────
+Apache-2.0
+────────────────────────────────────────────────────────────────────────────────
+
+  openssl, sync_wrapper
+
+────────────────────────────────────────────────────────────────────────────────
+Apache-2.0 AND ISC
+────────────────────────────────────────────────────────────────────────────────
+
+  ring
+
+────────────────────────────────────────────────────────────────────────────────
+ISC
+────────────────────────────────────────────────────────────────────────────────
+
+  rustls-webpki, untrusted
+
+────────────────────────────────────────────────────────────────────────────────
+BSD-2-Clause OR Apache-2.0 OR MIT
+────────────────────────────────────────────────────────────────────────────────
+
+  zerocopy
+
+────────────────────────────────────────────────────────────────────────────────
+BSD-3-Clause
+────────────────────────────────────────────────────────────────────────────────
+
+  subtle
+
+────────────────────────────────────────────────────────────────────────────────
+(Apache-2.0 OR MIT) AND BSD-3-Clause
+────────────────────────────────────────────────────────────────────────────────
+
+  encoding_rs
+
+────────────────────────────────────────────────────────────────────────────────
+(MIT OR Apache-2.0) AND Unicode-3.0
+────────────────────────────────────────────────────────────────────────────────
+
+  unicode-ident
+
+────────────────────────────────────────────────────────────────────────────────
+Unicode-3.0 (Unicode License v3)
+────────────────────────────────────────────────────────────────────────────────
+
+  icu_collections, icu_locale_core, icu_normalizer, icu_normalizer_data,
+  icu_properties, icu_properties_data, icu_provider, litemap, potential_utf,
+  tinystr, writeable, yoke, yoke-derive, zerofrom, zerofrom-derive, zerotrie,
+  zerovec, zerovec-derive
+
+────────────────────────────────────────────────────────────────────────────────
+MPL-2.0 (Mozilla Public License 2.0)
+────────────────────────────────────────────────────────────────────────────────
+
+  webpki-roots
+
+────────────────────────────────────────────────────────────────────────────────
+Apache-2.0 OR BSL-1.0
+────────────────────────────────────────────────────────────────────────────────
+
+  ryu
+
+────────────────────────────────────────────────────────────────────────────────
+Unlicense OR MIT
+────────────────────────────────────────────────────────────────────────────────
+
+  memchr
+
+================================================================================
+END OF NOTICES

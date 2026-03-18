@@ -1,0 +1,13 @@
+# Workspace cargo configuration
+#
+# Aliases make it easy to run the vTPM-backed test suite with a short command.
+# The vtpm-tests feature enables the in-process reference TPM for deterministic,
+# hardware-independent testing.
+
+[alias]
+# Recommended: run all SDK tests with the reference vTPM via cargo-nextest
+# (each test runs as a separate process — fully parallel, no thread conflicts)
+nt = "nextest run -p azure-guest-attestation-sdk --features vtpm-tests"
+
+# Fallback: run with built-in test harness (shared singleton serializes access)
+vt = "test -p azure-guest-attestation-sdk --features vtpm-tests --lib"

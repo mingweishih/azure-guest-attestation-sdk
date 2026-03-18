@@ -1,0 +1,7 @@
+# Azure Guest Attestation SDK — Code Owners
+#
+# These owners will be automatically requested for review on PRs that touch
+# matching paths.  See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for the entire repo
+* @AzureGuestAttestation/attestation-sdk
