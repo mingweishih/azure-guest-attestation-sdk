@@ -171,8 +171,15 @@ cargo build -p azure-guest-attest --features static --release
 ### Help
 
 ```powershell
-target/debug/azure-guest-attest --help
+target/release/azure-guest-attest --help
 ```
+
+> **Note (Linux):** TPM access requires root privileges. Run commands with `sudo`:
+> ```bash
+> sudo target/release/azure-guest-attest cvm-report
+> ```
+> Alternatively, add your user to the `tss` group (`sudo usermod -aG tss $USER`)
+> if your distro grants TPM device access to that group.
 
 ### Commands
 
