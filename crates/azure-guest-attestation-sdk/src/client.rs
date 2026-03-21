@@ -33,6 +33,7 @@ use crate::guest_attest::{
 };
 use crate::report::{self, CvmAttestationReport, CvmReportType, RuntimeClaims};
 use crate::tpm::attestation;
+use crate::tpm::commands::TpmCommandExt;
 use crate::tpm::device::Tpm;
 
 // ---------------------------------------------------------------------------
@@ -166,8 +167,6 @@ pub struct AttestResult {
     pub request_json: String,
     /// Base64url-encoded request (as sent on the wire).
     pub encoded_request: String,
-    /// Handle of the ephemeral RSA key (if created during guest attestation).
-    pub ephemeral_key_handle: Option<u32>,
     /// PCR indices included in the quote.
     pub pcrs: Vec<u32>,
 }
@@ -183,20 +182,15 @@ pub struct AttestationReport {
     pub json: String,
     /// PCR indices included.
     pub pcrs: Vec<u32>,
-    /// Ephemeral key handle (if created).
-    pub ephemeral_key_handle: Option<u32>,
 }
 
 /// TPM device evidence collected for attestation.
 ///
-/// Bundles the serializable [`TpmInfo`] (for the guest attestation JSON request)
-/// together with the ephemeral key handle needed for token decryption.
+/// Bundles the serializable [`TpmInfo`] (for the guest attestation JSON request).
 #[derive(Debug, Clone)]
 pub struct DeviceEvidence {
     /// The TPM attestation artifacts (AK cert/pub, PCR quote, ephemeral key, etc.).
     pub tpm_info: TpmInfo,
-    /// Handle of the ephemeral RSA key (if created), needed for [`AttestationClient::decrypt_token`].
-    pub ephemeral_key_handle: Option<u32>,
     /// PCR indices used in the quote.
     pub pcrs: Vec<u32>,
 }
@@ -337,16 +331,19 @@ impl AttestationClient {
         let (enc_key_pub, handle_bytes, enc_key_certify_info, enc_key_certify_info_sig) =
             attestation::get_ephemeral_key(&self.tpm, &pcrs)?;
 
-        let eph_handle = if handle_bytes.len() >= 4 {
-            Some(u32::from_be_bytes([
+        // The ephemeral key is a deterministic TPM2 primary — it can be
+        // recreated from the same PCRs at any time.  Flush the transient
+        // handle now to free TPM object slots; decrypt() / decrypt_token()
+        // will recreate it when needed.
+        if handle_bytes.len() >= 4 {
+            let h = u32::from_be_bytes([
                 handle_bytes[0],
                 handle_bytes[1],
                 handle_bytes[2],
                 handle_bytes[3],
-            ]))
-        } else {
-            None
-        };
+            ]);
+            let _ = self.tpm.flush_context(h);
+        }
 
         let pcr_set: Vec<u32> = pcr_values.iter().map(|(i, _)| *i).collect();
         let pcrs_struct: Vec<PcrEntry> = pcr_values
@@ -369,7 +366,6 @@ impl AttestationClient {
                 enc_key_certify_info,
                 enc_key_certify_info_sig,
             },
-            ephemeral_key_handle: eph_handle,
             pcrs,
         })
     }
@@ -435,7 +431,6 @@ impl AttestationClient {
         Ok(AttestationReport {
             json,
             pcrs: device_evidence.pcrs.clone(),
-            ephemeral_key_handle: device_evidence.ephemeral_key_handle,
         })
     }
 
@@ -511,7 +506,6 @@ impl AttestationClient {
             token,
             request_json: report.json,
             encoded_request: encoded,
-            ephemeral_key_handle: report.ephemeral_key_handle,
             pcrs: report.pcrs,
         })
     }
@@ -538,7 +532,6 @@ impl AttestationClient {
                     token: Some(token),
                     request_json: payload,
                     encoded_request: String::new(),
-                    ephemeral_key_handle: None,
                     pcrs: Vec::new(),
                 })
             }
@@ -549,7 +542,6 @@ impl AttestationClient {
                     token: None,
                     request_json: payload,
                     encoded_request: String::new(),
-                    ephemeral_key_handle: None,
                     pcrs: Vec::new(),
                 })
             }
@@ -557,18 +549,51 @@ impl AttestationClient {
     }
 
     /// Decrypt a guest attestation token envelope using the ephemeral key
-    /// created during attestation.
+    /// derived from the given PCR indices.
+    ///
+    /// The ephemeral RSA key is a deterministic TPM2 primary — it is
+    /// recreated from the same PCRs each time, so callers do **not** need
+    /// to retain a key handle from [`attest_guest`](Self::attest_guest).
     ///
     /// The `token_b64url` should be the base64url-encoded token returned by
-    /// the provider. The `ephemeral_key_handle` and `pcrs` should come from
-    /// the [`AttestResult`] of the corresponding [`attest_guest`](Self::attest_guest) call.
-    pub fn decrypt_token(
-        &self,
-        ephemeral_key_handle: u32,
-        pcrs: &[u32],
-        token_b64url: &str,
-    ) -> io::Result<Option<String>> {
-        guest_attest::parse_token(&self.tpm, ephemeral_key_handle, pcrs, token_b64url)
+    /// the provider. The `pcrs` should come from the [`AttestResult`] of the
+    /// corresponding [`attest_guest`](Self::attest_guest) call.
+    pub fn decrypt_token(&self, pcrs: &[u32], token_b64url: &str) -> io::Result<Option<String>> {
+        let handle = self.recreate_ephemeral_key(pcrs)?;
+        let result = guest_attest::parse_token(&self.tpm, handle, pcrs, token_b64url);
+        let _ = self.tpm.flush_context(handle);
+        result
+    }
+
+    /// Decrypt raw ciphertext using the ephemeral RSA key derived from the
+    /// given PCR indices.
+    ///
+    /// The ephemeral key is a deterministic TPM2 primary — calling this
+    /// method with the same PCRs will always use the same key, regardless
+    /// of whether [`attest_guest`](Self::attest_guest) was called first.
+    pub fn decrypt(&self, pcrs: &[u32], ciphertext: &[u8]) -> io::Result<Vec<u8>> {
+        let handle = self.recreate_ephemeral_key(pcrs)?;
+        let result = attestation::decrypt_with_ephemeral_key(&self.tpm, handle, pcrs, ciphertext);
+        let _ = self.tpm.flush_context(handle);
+        result
+    }
+
+    /// Recreate the deterministic ephemeral RSA primary key from PCRs and
+    /// return its transient handle.  Caller **must** flush the handle when done.
+    fn recreate_ephemeral_key(&self, pcrs: &[u32]) -> io::Result<u32> {
+        let (_, handle_bytes, _, _) = attestation::get_ephemeral_key(&self.tpm, pcrs)?;
+        if handle_bytes.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ephemeral key handle too short",
+            ));
+        }
+        Ok(u32::from_be_bytes([
+            handle_bytes[0],
+            handle_bytes[1],
+            handle_bytes[2],
+            handle_bytes[3],
+        ]))
     }
 }
 
@@ -723,12 +748,10 @@ mod tests {
             token: Some("tok".into()),
             request_json: "{}".into(),
             encoded_request: "abc".into(),
-            ephemeral_key_handle: Some(0x81000001),
             pcrs: vec![0, 1, 7],
         };
         let s = format!("{r:?}");
         assert!(s.contains("tok"));
-        // Debug for u32 is decimal: 0x81000001 = 2164260865
-        assert!(s.contains("2164260865"));
+        assert!(s.contains("[0, 1, 7]"));
     }
 }

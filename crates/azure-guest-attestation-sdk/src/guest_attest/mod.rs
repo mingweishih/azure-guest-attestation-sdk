@@ -316,7 +316,6 @@ pub struct AttestCvmResult {
     pub request_json: String,
     pub encoded_request_b64url: String,
     pub token_b64url: Option<String>,
-    pub ephemeral_key_handle: Option<u32>,
     pub pcrs: Vec<u32>,
 }
 
@@ -1050,7 +1049,6 @@ mod tests {
             request_json: "{}".into(),
             encoded_request_b64url: "abc".into(),
             token_b64url: Some("token".into()),
-            ephemeral_key_handle: Some(0x81000001),
             pcrs: vec![0, 1, 7],
         };
         let json = serde_json::to_string(&result).unwrap();
