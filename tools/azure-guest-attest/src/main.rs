@@ -1041,24 +1041,20 @@ fn main() -> anyhow::Result<()> {
             if let Some(tok) = &result.token {
                 writeln!(writer, "Token (raw/envelope b64url): {tok}")?;
                 if decode {
-                    // Try envelope decrypt first if we retained ephemeral handle
-                    if let Some(h) = result.ephemeral_key_handle {
-                        match client.decrypt_token(h, &result.pcrs, tok) {
-                            Ok(Some(inner_jwt)) => {
-                                writeln!(writer, "Decrypted JWT:")?;
-                                decode_and_print_jwt(&inner_jwt, &mut *writer)?;
-                            }
-                            Ok(None) => {
-                                writeln!(writer, "(Token not in encrypted envelope format; attempting direct JWT decode)")?;
-                                decode_and_print_jwt(tok, &mut *writer)?;
-                            }
-                            Err(e) => {
-                                writeln!(writer, "(Envelope parse/decrypt failed: {e}; attempting direct JWT decode)")?;
-                                decode_and_print_jwt(tok, &mut *writer)?;
-                            }
+                    // Try envelope decrypt using the ephemeral key (recreated from PCRs)
+                    match client.decrypt_token(&result.pcrs, tok) {
+                        Ok(Some(inner_jwt)) => {
+                            writeln!(writer, "Decrypted JWT:")?;
+                            decode_and_print_jwt(&inner_jwt, &mut *writer)?;
                         }
-                    } else {
-                        decode_and_print_jwt(tok, &mut *writer)?;
+                        Ok(None) => {
+                            writeln!(writer, "(Token not in encrypted envelope format; attempting direct JWT decode)")?;
+                            decode_and_print_jwt(tok, &mut *writer)?;
+                        }
+                        Err(e) => {
+                            writeln!(writer, "(Envelope parse/decrypt failed: {e}; attempting direct JWT decode)")?;
+                            decode_and_print_jwt(tok, &mut *writer)?;
+                        }
                     }
                 }
             } else {
