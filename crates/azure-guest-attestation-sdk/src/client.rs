@@ -333,8 +333,8 @@ impl AttestationClient {
 
         // The ephemeral key is a deterministic TPM2 primary — it can be
         // recreated from the same PCRs at any time.  Flush the transient
-        // handle now to free TPM object slots; decrypt() / decrypt_token()
-        // will recreate it when needed.
+        // handle now to free TPM object slots; decrypt_token() will
+        // recreate it when needed.
         if handle_bytes.len() >= 4 {
             let h = u32::from_be_bytes([
                 handle_bytes[0],
@@ -561,19 +561,6 @@ impl AttestationClient {
     pub fn decrypt_token(&self, pcrs: &[u32], token_b64url: &str) -> io::Result<Option<String>> {
         let handle = self.recreate_ephemeral_key(pcrs)?;
         let result = guest_attest::parse_token(&self.tpm, handle, pcrs, token_b64url);
-        let _ = self.tpm.flush_context(handle);
-        result
-    }
-
-    /// Decrypt raw ciphertext using the ephemeral RSA key derived from the
-    /// given PCR indices.
-    ///
-    /// The ephemeral key is a deterministic TPM2 primary — calling this
-    /// method with the same PCRs will always use the same key, regardless
-    /// of whether [`attest_guest`](Self::attest_guest) was called first.
-    pub fn decrypt(&self, pcrs: &[u32], ciphertext: &[u8]) -> io::Result<Vec<u8>> {
-        let handle = self.recreate_ephemeral_key(pcrs)?;
-        let result = attestation::decrypt_with_ephemeral_key(&self.tpm, handle, pcrs, ciphertext);
         let _ = self.tpm.flush_context(handle);
         result
     }

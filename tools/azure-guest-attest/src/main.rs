@@ -187,6 +187,9 @@ enum Commands {
         /// Include original request JSON
         #[arg(long)]
         show_request: bool,
+        /// PCR indices to include in the quote (comma-separated or repeated)
+        #[arg(long = "pcr-index", value_name = "INDEX", value_delimiter = ',')]
+        pcr_index: Vec<u32>,
     },
     /// Perform TEE-only attestation (no TPM/PCR evidence) against MAA platform endpoint
     TeeAttest {
@@ -1021,6 +1024,7 @@ fn main() -> anyhow::Result<()> {
             client_payload,
             decode,
             show_request,
+            pcr_index,
         } => {
             let tpm = Tpm::open().map_err(|e| anyhow::anyhow!("Failed to open TPM: {e}"))?;
             // Build provider enum
@@ -1030,9 +1034,14 @@ fn main() -> anyhow::Result<()> {
                 other => return Err(anyhow::anyhow!("Unknown provider: {other}")),
             };
             let client = azure_guest_attestation_sdk::client::AttestationClient::from_tpm(tpm);
+            let pcr_selection = if pcr_index.is_empty() {
+                None
+            } else {
+                Some(validate_pcr_filter(&pcr_index)?)
+            };
             let opts = azure_guest_attestation_sdk::client::AttestOptions {
                 client_payload: Some(client_payload.clone()),
-                ..Default::default()
+                pcr_selection,
             };
             let result = client.attest_guest(prov, Some(&opts))?;
             if show_request {
