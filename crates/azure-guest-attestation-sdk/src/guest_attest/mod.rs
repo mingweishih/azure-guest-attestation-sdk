@@ -150,12 +150,47 @@ pub struct IsolationInfo {
     pub evidence: Option<IsolationEvidence>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct IsolationEvidence {
-    #[serde(rename = "Proof")]
     pub tee_proof: TeeProof,
-    #[serde(rename = "RunTimeData", serialize_with = "as_b64")]
     pub runtime_data: Vec<u8>,
+}
+
+impl Serialize for IsolationEvidence {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+        let mut state = serializer.serialize_struct("IsolationEvidence", 2)?;
+
+        // The encoding varies by TEE type to match the MAA service expectations:
+        //   SNP → base64url (no padding) for Proof and RunTimeData
+        //   TDX → standard base64 for Proof and RunTimeData
+        match &self.tee_proof {
+            TeeProof::Snp {
+                snp_report,
+                vcek_chain,
+            } => {
+                // SNP Proof is a base64url-encoded JSON string containing
+                // base64url-encoded SnpReport and VcekCertChain.
+                let inner_json = serde_json::json!({
+                    "SnpReport": URL_SAFE_NO_PAD.encode(snp_report),
+                    "VcekCertChain": URL_SAFE_NO_PAD.encode(vcek_chain),
+                });
+                let inner_bytes = inner_json.to_string().into_bytes();
+                let proof_str = URL_SAFE_NO_PAD.encode(&inner_bytes);
+                state.serialize_field("Proof", &proof_str)?;
+                state
+                    .serialize_field("RunTimeData", &URL_SAFE_NO_PAD.encode(&self.runtime_data))?;
+            }
+            TeeProof::Tdx { td_quote } => {
+                state.serialize_field("Proof", &STANDARD.encode(td_quote))?;
+                state.serialize_field("RunTimeData", &STANDARD.encode(&self.runtime_data))?;
+            }
+        }
+        state.end()
+    }
 }
 
 /// TEE proof types (subset for SNP + TDX).
@@ -168,31 +203,6 @@ pub enum TeeProof {
     Tdx {
         td_quote: Vec<u8>,
     },
-}
-
-impl Serialize for TeeProof {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            TeeProof::Snp {
-                snp_report,
-                vcek_chain,
-            } => {
-                let mut state = serializer.serialize_struct("Snp", 2)?;
-                let snp_report_b64 = base64::engine::general_purpose::STANDARD.encode(snp_report);
-                state.serialize_field("SnpReport", &snp_report_b64)?;
-                let vcek_chain_b64 = base64::engine::general_purpose::STANDARD.encode(vcek_chain);
-                state.serialize_field("VcekCertChain", &vcek_chain_b64)?;
-                state.end()
-            }
-            TeeProof::Tdx { td_quote } => {
-                let td_quote_b64 = base64::engine::general_purpose::STANDARD.encode(td_quote);
-                td_quote_b64.serialize(serializer)
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -824,59 +834,118 @@ mod tests {
 
     #[test]
     fn isolation_info_with_snp_evidence() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let snp_report = vec![0xAA; 32];
+        let vcek_chain = vec![0xBB; 16];
+        let runtime_data = vec![0xCC; 8];
+
         let info = IsolationInfo {
             vm_type: IsolationType::SevSnp,
             evidence: Some(IsolationEvidence {
                 tee_proof: TeeProof::Snp {
-                    snp_report: vec![0xAA; 32],
-                    vcek_chain: vec![0xBB; 16],
+                    snp_report: snp_report.clone(),
+                    vcek_chain: vcek_chain.clone(),
                 },
-                runtime_data: vec![0xCC; 8],
+                runtime_data: runtime_data.clone(),
             }),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"Type\":\"SevSnp\""));
-        assert!(json.contains("SnpReport"));
-        assert!(json.contains("VcekCertChain"));
-        assert!(json.contains("RunTimeData"));
+        assert!(json.contains("\"RunTimeData\":"));
+
+        // The Proof field should be a base64url string, not a nested object.
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let evidence = v["Evidence"].as_object().unwrap();
+        let proof_str = evidence["Proof"].as_str().expect("Proof must be a string");
+
+        // Decode the outer base64url to recover the inner JSON.
+        let inner_bytes = URL_SAFE_NO_PAD.decode(proof_str).unwrap();
+        let inner: serde_json::Value = serde_json::from_slice(&inner_bytes).unwrap();
+        assert!(inner.get("SnpReport").is_some());
+        assert!(inner.get("VcekCertChain").is_some());
+
+        // Verify the inner values round-trip back to the original bytes.
+        let decoded_report = URL_SAFE_NO_PAD
+            .decode(inner["SnpReport"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded_report, snp_report);
+        let decoded_vcek = URL_SAFE_NO_PAD
+            .decode(inner["VcekCertChain"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded_vcek, vcek_chain);
+
+        // RunTimeData should also be base64url-encoded.
+        let rt_str = evidence["RunTimeData"].as_str().unwrap();
+        let decoded_rt = URL_SAFE_NO_PAD.decode(rt_str).unwrap();
+        assert_eq!(decoded_rt, runtime_data);
     }
 
     #[test]
     fn isolation_info_with_tdx_evidence() {
+        use base64::engine::general_purpose::STANDARD;
+
+        let td_quote = vec![0xDD; 64];
+        let runtime_data = vec![0xEE; 16];
+
         let info = IsolationInfo {
             vm_type: IsolationType::Tdx,
             evidence: Some(IsolationEvidence {
                 tee_proof: TeeProof::Tdx {
-                    td_quote: vec![0xDD; 64],
+                    td_quote: td_quote.clone(),
                 },
-                runtime_data: vec![],
+                runtime_data: runtime_data.clone(),
             }),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"Type\":\"Tdx\""));
+
+        // TDX uses standard base64 (with padding) for both Proof and RunTimeData.
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let evidence = v["Evidence"].as_object().unwrap();
+        let proof_str = evidence["Proof"].as_str().unwrap();
+        assert_eq!(STANDARD.decode(proof_str).unwrap(), td_quote);
+
+        let rt_str = evidence["RunTimeData"].as_str().unwrap();
+        assert_eq!(STANDARD.decode(rt_str).unwrap(), runtime_data);
     }
 
-    // TeeProof
+    // TeeProof (via IsolationEvidence)
     #[test]
-    fn tee_proof_snp_serialization() {
-        let proof = TeeProof::Snp {
-            snp_report: vec![1, 2, 3],
-            vcek_chain: vec![4, 5, 6],
+    fn tee_proof_snp_double_encodes_as_base64url_string() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let evidence = IsolationEvidence {
+            tee_proof: TeeProof::Snp {
+                snp_report: vec![1, 2, 3],
+                vcek_chain: vec![4, 5, 6],
+            },
+            runtime_data: vec![],
         };
-        let json = serde_json::to_string(&proof).unwrap();
+        let json = serde_json::to_string(&evidence).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(v.get("SnpReport").is_some());
-        assert!(v.get("VcekCertChain").is_some());
+
+        // Proof must be a flat string (not a nested object).
+        let proof_str = v["Proof"].as_str().expect("Proof must be a string");
+
+        // Decode outer → inner JSON → verify fields exist.
+        let inner_bytes = URL_SAFE_NO_PAD.decode(proof_str).unwrap();
+        let inner: serde_json::Value = serde_json::from_slice(&inner_bytes).unwrap();
+        assert!(inner.get("SnpReport").is_some());
+        assert!(inner.get("VcekCertChain").is_some());
     }
 
     #[test]
-    fn tee_proof_tdx_serialization() {
-        let proof = TeeProof::Tdx {
-            td_quote: vec![7, 8, 9],
+    fn tee_proof_tdx_serializes_as_base64_string() {
+        let evidence = IsolationEvidence {
+            tee_proof: TeeProof::Tdx {
+                td_quote: vec![7, 8, 9],
+            },
+            runtime_data: vec![],
         };
-        let json = serde_json::to_string(&proof).unwrap();
+        let json = serde_json::to_string(&evidence).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(v.is_string());
+        assert!(v["Proof"].is_string());
     }
 
     // PcrEntry
