@@ -57,11 +57,10 @@ impl ImdsClient {
 
     /// Fetch a TDX TD Quote from IMDS for the given TDX report bytes.
     pub fn get_td_quote(&self, report: &[u8]) -> io::Result<Vec<u8>> {
-        use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
-        use base64::Engine;
-        const TDQUOTE_ENDPOINT: &str = "http://169.254.169.254/acc/tdquote";
-
-        // Trim to canonical TDX report size expected by IMDS
+        // Trim to canonical TDX report size expected by IMDS.
+        // Validation is in this thin wrapper so its stack frame stays small;
+        // the heavy HTTP / base64 work lives in `fetch_td_quote_http` whose
+        // frame is only allocated when we actually need the network call.
         let needed = crate::report::TDX_VM_REPORT_SIZE;
         if report.len() < needed {
             return Err(io::Error::new(
@@ -73,7 +72,21 @@ impl ImdsClient {
                 ),
             ));
         }
-        let rep = &report[..needed];
+        self.fetch_td_quote_http(&report[..needed])
+    }
+
+    /// Post the (already-validated) TDX report to IMDS and return the quote.
+    ///
+    /// Separated from [`get_td_quote`] so that the large stack frame for
+    /// reqwest responses, base64 buffers, and JSON values is only allocated
+    /// when the caller actually reaches the network path.  With `opt-level = 0`
+    /// (required by injectorpp in the test profile) the compiler does not
+    /// shrink stack frames, and keeping everything in a single function caused
+    /// stack overflows on Windows test threads.
+    fn fetch_td_quote_http(&self, rep: &[u8]) -> io::Result<Vec<u8>> {
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+        use base64::Engine;
+        const TDQUOTE_ENDPOINT: &str = "http://169.254.169.254/acc/tdquote";
 
         // First attempt: standard base64 with padding
         let std_b64 = STANDARD.encode(rep);
@@ -146,5 +159,125 @@ impl ImdsClient {
 impl Default for ImdsClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use injectorpp::interface::injector::*;
+
+    #[test]
+    fn imds_client_new_creates_instance() {
+        let _client = ImdsClient::new();
+    }
+
+    #[test]
+    fn imds_client_default_creates_instance() {
+        let _client = ImdsClient::default();
+    }
+
+    #[test]
+    fn get_td_quote_report_too_small() {
+        let client = ImdsClient::new();
+        let small_report = vec![0u8; 10]; // Much smaller than TDX_VM_REPORT_SIZE (1024)
+        let err = client.get_td_quote(&small_report).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("too small"),
+            "expected 'too small' error: {err}"
+        );
+    }
+
+    // Helper: standalone replacement for ImdsClient::get_json that returns
+    // a successful vcekCert + certificateChain response.
+    fn fake_get_json_vcek_happy(_self: &ImdsClient, _url: &str) -> io::Result<serde_json::Value> {
+        Ok(serde_json::json!({
+            "vcekCert": "-----BEGIN CERT-----\nfake-vcek\n-----END CERT-----\n",
+            "certificateChain": "-----BEGIN CERT-----\nfake-chain\n-----END CERT-----\n"
+        }))
+    }
+
+    #[test]
+    fn get_vcek_chain_happy_path() {
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_json))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(fake_get_json_vcek_happy));
+        }
+        let client = ImdsClient::new();
+        let result = client.get_vcek_chain().unwrap();
+        let expected = b"-----BEGIN CERT-----\nfake-vcek\n-----END CERT-----\n\
+                         -----BEGIN CERT-----\nfake-chain\n-----END CERT-----\n";
+        assert_eq!(result, expected);
+    }
+
+    fn fake_get_json_missing_fields(
+        _self: &ImdsClient,
+        _url: &str,
+    ) -> io::Result<serde_json::Value> {
+        // Response has no vcekCert or certificateChain fields
+        Ok(serde_json::json!({"status": "ok"}))
+    }
+
+    #[test]
+    fn get_vcek_chain_missing_fields_returns_empty() {
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_json))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(
+                    fake_get_json_missing_fields
+                ));
+        }
+        let client = ImdsClient::new();
+        let result = client.get_vcek_chain().unwrap();
+        // Both fields default to "" so the result is empty
+        assert!(result.is_empty());
+    }
+
+    fn fake_get_json_error(_self: &ImdsClient, _url: &str) -> io::Result<serde_json::Value> {
+        Err(io::Error::other("network unreachable"))
+    }
+
+    #[test]
+    fn get_vcek_chain_error_propagates() {
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_json))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(fake_get_json_error));
+        }
+        let client = ImdsClient::new();
+        let err = client.get_vcek_chain().unwrap_err();
+        assert!(
+            err.to_string().contains("network unreachable"),
+            "expected propagated error: {err}"
+        );
+    }
+
+    fn fake_get_json_partial_fields(
+        _self: &ImdsClient,
+        _url: &str,
+    ) -> io::Result<serde_json::Value> {
+        // Only vcekCert present, no certificateChain
+        Ok(serde_json::json!({"vcekCert": "only-vcek"}))
+    }
+
+    #[test]
+    fn get_vcek_chain_partial_fields() {
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_json))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(
+                    fake_get_json_partial_fields
+                ));
+        }
+        let client = ImdsClient::new();
+        let result = client.get_vcek_chain().unwrap();
+        // certificateChain defaults to ""
+        assert_eq!(result, b"only-vcek");
     }
 }

@@ -1606,4 +1606,105 @@ mod tests {
         let decoded = STANDARD.decode(quote_b64).unwrap();
         assert_eq!(decoded, td_quote);
     }
+
+    // -----------------------------------------------------------------------
+    // build_tee_only_payload_from_evidence — injectorpp-mocked auto-fetch
+    // -----------------------------------------------------------------------
+
+    fn fake_get_vcek_chain_for_payload(_self: &ImdsClient) -> io::Result<Vec<u8>> {
+        Ok(b"mocked-vcek-chain-for-payload".to_vec())
+    }
+
+    fn fake_get_td_quote_for_payload(_self: &ImdsClient, _report: &[u8]) -> io::Result<Vec<u8>> {
+        Ok(vec![0xCC; 128])
+    }
+
+    #[test]
+    fn build_tee_only_payload_snp_with_endorsement() {
+        use crate::client::{CvmEvidence, Endorsement, EndorsementKind};
+        use crate::report::CvmReportType;
+        use base64::engine::general_purpose::STANDARD;
+        let evidence = CvmEvidence {
+            report_type: CvmReportType::SnpVmReport,
+            tee_report: vec![0xAA; crate::report::SNP_VM_REPORT_SIZE],
+            runtime_claims: None,
+            runtime_data: vec![],
+            platform_quote: vec![],
+        };
+        let endorsement = Endorsement {
+            kind: EndorsementKind::Vcek,
+            data: b"provided-vcek-chain".to_vec(),
+        };
+        let (payload, rtype) =
+            build_tee_only_payload_from_evidence(&evidence, Some(&endorsement)).unwrap();
+        assert_eq!(rtype, CvmReportType::SnpVmReport);
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert!(v.get("report").is_some());
+        // Decode the report field → inner JSON → VcekCertChain should match
+        let report_b64 = v["report"].as_str().unwrap();
+        let report_bytes = STANDARD.decode(report_b64).unwrap();
+        let inner: serde_json::Value = serde_json::from_slice(&report_bytes).unwrap();
+        let vcek_b64 = inner["VcekCertChain"].as_str().unwrap();
+        let vcek_decoded = STANDARD.decode(vcek_b64).unwrap();
+        assert_eq!(vcek_decoded, b"provided-vcek-chain");
+    }
+
+    #[test]
+    fn build_tee_only_payload_snp_auto_fetch_vcek() {
+        use crate::client::CvmEvidence;
+        use crate::report::CvmReportType;
+        use injectorpp::interface::injector::*;
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_vcek_chain))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(
+                    fake_get_vcek_chain_for_payload
+                ));
+        }
+
+        let evidence = CvmEvidence {
+            report_type: CvmReportType::SnpVmReport,
+            tee_report: vec![0xAA; crate::report::SNP_VM_REPORT_SIZE],
+            runtime_claims: None,
+            runtime_data: vec![],
+            platform_quote: vec![],
+        };
+        // No endorsement → triggers auto-fetch
+        let (payload, rtype) = build_tee_only_payload_from_evidence(&evidence, None).unwrap();
+        assert_eq!(rtype, CvmReportType::SnpVmReport);
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert!(v.get("report").is_some());
+    }
+
+    #[test]
+    fn build_tee_only_payload_tdx_auto_fetch_td_quote() {
+        use crate::client::CvmEvidence;
+        use crate::report::CvmReportType;
+        use base64::engine::general_purpose::STANDARD;
+        use injectorpp::interface::injector::*;
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_td_quote))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(
+                    fake_get_td_quote_for_payload
+                ));
+        }
+
+        let evidence = CvmEvidence {
+            report_type: CvmReportType::TdxVmReport,
+            tee_report: vec![0xBB; crate::report::TDX_VM_REPORT_SIZE],
+            runtime_claims: None,
+            runtime_data: vec![],
+            platform_quote: vec![], // empty → triggers auto-fetch
+        };
+        let (payload, rtype) = build_tee_only_payload_from_evidence(&evidence, None).unwrap();
+        assert_eq!(rtype, CvmReportType::TdxVmReport);
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert!(v.get("quote").is_some());
+        let quote_b64 = v["quote"].as_str().unwrap();
+        let decoded = STANDARD.decode(quote_b64).unwrap();
+        assert_eq!(decoded, vec![0xCC; 128]);
+    }
 }

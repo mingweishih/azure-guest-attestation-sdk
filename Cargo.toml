@@ -5,6 +5,18 @@ members = [
     "tools/azure-guest-attest",
 ]
 
+# ---------------------------------------------------------------------------
+# Test profile required by injectorpp (runtime function mocking).
+# opt-level = 0 prevents inlining so binary patching targets the right symbols.
+# codegen-units = 1 avoids duplicate symbol addresses across compilation units.
+# ---------------------------------------------------------------------------
+[profile.test]
+opt-level = 0
+debug = true
+lto = false
+codegen-units = 1
+incremental = false
+
 # Shared workspace metadata
 [workspace.package]
 edition = "2021"

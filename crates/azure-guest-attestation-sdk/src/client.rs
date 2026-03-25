@@ -855,6 +855,79 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // build_isolation_info — auto-fetch paths (injectorpp mocked)
+    // -----------------------------------------------------------------------
+
+    fn fake_get_vcek_chain(_self: &guest_attest::ImdsClient) -> io::Result<Vec<u8>> {
+        Ok(b"mocked-vcek-chain-data".to_vec())
+    }
+
+    fn fake_get_td_quote(_self: &guest_attest::ImdsClient, _report: &[u8]) -> io::Result<Vec<u8>> {
+        Ok(vec![0xDD; 256])
+    }
+
+    #[test]
+    fn build_isolation_info_snp_auto_fetch_vcek() {
+        use injectorpp::interface::injector::*;
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(
+                    guest_attest::ImdsClient::get_vcek_chain
+                ))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(fake_get_vcek_chain));
+        }
+
+        let evidence = CvmEvidence {
+            report_type: report::CvmReportType::SnpVmReport,
+            tee_report: vec![0xAA; report::SNP_VM_REPORT_SIZE],
+            runtime_claims: None,
+            runtime_data: vec![0xCC; 64],
+            platform_quote: vec![],
+        };
+        // No endorsement → triggers IMDS auto-fetch for VCEK chain
+        let info = build_isolation_info(Some(&evidence), None).unwrap();
+        assert!(matches!(info.vm_type, IsolationType::SevSnp));
+        let ev = info.evidence.unwrap();
+        match &ev.tee_proof {
+            TeeProof::Snp { vcek_chain, .. } => {
+                assert_eq!(vcek_chain, b"mocked-vcek-chain-data");
+            }
+            _ => panic!("expected Snp proof"),
+        }
+    }
+
+    #[test]
+    fn build_isolation_info_tdx_auto_fetch_td_quote() {
+        use injectorpp::interface::injector::*;
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(
+                    guest_attest::ImdsClient::get_td_quote
+                ))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(fake_get_td_quote));
+        }
+
+        let evidence = CvmEvidence {
+            report_type: report::CvmReportType::TdxVmReport,
+            tee_report: vec![0xAA; report::TDX_VM_REPORT_SIZE],
+            runtime_claims: None,
+            runtime_data: vec![0xEE; 32],
+            platform_quote: vec![], // empty → triggers auto-fetch
+        };
+        let info = build_isolation_info(Some(&evidence), None).unwrap();
+        assert!(matches!(info.vm_type, IsolationType::Tdx));
+        let ev = info.evidence.unwrap();
+        match &ev.tee_proof {
+            TeeProof::Tdx { td_quote } => {
+                assert_eq!(td_quote, &vec![0xDD; 256]);
+            }
+            _ => panic!("expected Tdx proof"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // make_provider
     // -----------------------------------------------------------------------
 

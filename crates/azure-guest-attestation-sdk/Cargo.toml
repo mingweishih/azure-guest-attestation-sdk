@@ -48,3 +48,4 @@ vtpm-tests = ["ms-tpm-20-ref", "getrandom"]
 
 [dev-dependencies]
 num-bigint = "0.4"
+injectorpp = "0.5.0"
