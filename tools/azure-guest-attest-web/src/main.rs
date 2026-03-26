@@ -263,31 +263,34 @@ async fn api_cvm_report(params: axum::extract::Query<CvmReportParams>) -> Json<A
             Err(e) => return ApiResponse::err(e),
         };
 
-        let (report, claims) = match attestation::get_cvm_report(&tpm, ud_vec.as_deref()) {
+        // Fetch raw bytes first (for the hex dump), then parse
+        let raw_bytes = match attestation::get_cvm_report_raw(&tpm, ud_vec.as_deref()) {
             Ok(r) => r,
             Err(e) => return ApiResponse::err(format!("Failed to get CVM report: {e}")),
         };
+
+        let (report, claims) =
+            match azure_guest_attestation_sdk::report::CvmAttestationReport::parse_with_runtime_claims(&raw_bytes) {
+                Ok(r) => r,
+                Err(e) => return ApiResponse::err(format!("Failed to parse CVM report: {e}")),
+            };
 
         let rtype = report.runtime_claims_header.report_type;
         let rh = &report.report_header;
         let rch = &report.runtime_claims_header;
 
-        let mut result = serde_json::json!({
-            "report_header": {
+        // Use an ordered map so the UI displays fields in logical order
+        let mut result = serde_json::Map::new();
+        result.insert(
+            "report_header".into(),
+            serde_json::json!({
                 "signature": format!("0x{:08x}", rh.signature),
                 "version": rh.version,
                 "report_size": rh.report_size,
                 "request_type": format!("{:?}", rh.request_type),
                 "status": format!("0x{:08x}", rh.status),
-            },
-            "runtime_claims_header": {
-                "data_size": rch.data_size,
-                "version": rch.version,
-                "report_type": format!("{rtype:?}"),
-                "report_data_hash_type": format!("{:?}", rch.report_data_hash_type),
-                "variable_data_size": rch.variable_data_size,
-            },
-        });
+            }),
+        );
 
         // Parse and pretty-print TEE report
         let expected = match rtype {
@@ -326,18 +329,40 @@ async fn api_cvm_report(params: axum::extract::Query<CvmReportParams>) -> Json<A
                 _ => None,
             };
             if let Some(pretty) = tee_pretty {
-                result["tee_report_pretty"] = serde_json::json!(pretty);
+                result.insert("tee_report_pretty".into(), serde_json::json!(pretty));
             }
-            result["tee_report_hex"] =
-                serde_json::json!(hex::encode(&report.tee_report[..expected]));
+            result.insert(
+                "tee_report_hex".into(),
+                serde_json::json!(hex::encode(&report.tee_report[..expected])),
+            );
         }
 
-        match claims {
-            Some(c) => result["runtime_claims"] = serde_json::json!(c),
-            None => result["runtime_claims"] = serde_json::json!(null),
-        }
+        result.insert(
+            "runtime_claims_header".into(),
+            serde_json::json!({
+                "data_size": rch.data_size,
+                "version": rch.version,
+                "report_type": format!("{rtype:?}"),
+                "report_data_hash_type": format!("{:?}", rch.report_data_hash_type),
+                "variable_data_size": rch.variable_data_size,
+            }),
+        );
 
-        ApiResponse::ok(result)
+        result.insert(
+            "runtime_claims".into(),
+            match claims {
+                Some(c) => serde_json::json!(c),
+                None => serde_json::json!(null),
+            },
+        );
+
+        // Full raw report hex (same as CLI --raw output)
+        result.insert(
+            "raw_report_hex".into(),
+            serde_json::json!(hex::encode(&raw_bytes)),
+        );
+
+        ApiResponse::ok(serde_json::Value::Object(result))
     })
     .await
     .unwrap_or_else(|e| ApiResponse::err(format!("Task failed: {e}")))

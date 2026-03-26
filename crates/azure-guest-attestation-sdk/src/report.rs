@@ -152,8 +152,10 @@ pub struct RsaJwk {
     pub kid: String,
     pub key_ops: Vec<String>,
     pub kty: String,
-    pub e: Vec<u8>,
-    pub n: Vec<u8>,
+    /// Base64url-encoded RSA public exponent
+    pub e: String,
+    /// Base64url-encoded RSA modulus
+    pub n: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -233,15 +235,18 @@ mod tests {
     fn parse_report_with_claims_tail() {
         // Build a zeroed report buffer
         let fixed = vec![0u8; size_of::<CvmAttestationReport>() - size_of::<u32>()];
-        // Minimal JSON runtime claims tail
-        let json = br#"{"keys":[],"vm-configuration":{"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":false,"vmUniqueId":""},"user-data":""}"#;
+        // Minimal JSON runtime claims tail with a JWK key (e/n as base64url strings)
+        let json = br#"{"keys":[{"kid":"HCLAkPub","key_ops":["sign"],"kty":"RSA","e":"AQAB","n":"0vx7agoebGcQ"}],"vm-configuration":{"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":false,"vmUniqueId":""},"user-data":""}"#;
         let mut buf = fixed.clone();
         buf.extend_from_slice(&(json.len() as u32).to_le_bytes());
         buf.extend_from_slice(json);
         let (rep, claims) = CvmAttestationReport::parse_with_runtime_claims(&buf).expect("parse");
         assert_eq!(rep.tee_report.len(), super::ATTESTATION_REPORT_SIZE_MAX);
-        assert!(claims.is_some());
-        assert!(claims.unwrap().keys.is_empty());
+        let claims = claims.expect("claims should be Some");
+        assert_eq!(claims.keys.len(), 1);
+        assert_eq!(claims.keys[0].kid, "HCLAkPub");
+        assert_eq!(claims.keys[0].e, "AQAB");
+        assert_eq!(claims.keys[0].n, "0vx7agoebGcQ");
     }
 
     #[test]
