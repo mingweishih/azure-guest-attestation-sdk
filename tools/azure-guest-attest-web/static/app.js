@@ -149,6 +149,16 @@ function renderObject(obj, depth = 0) {
             // Check for special renderable fields
             if (key === 'tee_report_pretty' || key === 'pretty') {
                 html += `<td><div class="pretty-block"><pre>${escapeHtml(String(value))}</pre></div></td>`;
+            } else if (key === 'raw_report_hex') {
+                const hexStr = String(value);
+                html += '<td>';
+                html += '<div class="collapsible">';
+                html += `<button class="collapsible-header" onclick="toggleCollapsible(this)">`;
+                html += `<span class="arrow">▶</span> Raw Report (${hexStr.length / 2} bytes, click to expand)`;
+                html += '</button>';
+                html += `<div class="collapsible-body"><div class="hex-display">${escapeHtml(hexStr)}</div></div>`;
+                html += '</div>';
+                html += '</td>';
             } else if (key === 'tee_report_hex' || key === 'raw_hex' || key === 'hex') {
                 const hexStr = String(value);
                 if (hexStr.length > 80) {
