@@ -59,5 +59,22 @@ if ($InstallCbindgen) {
     }
 }
 
+# Install cargo-nextest using pre-built binaries (much faster than
+# compiling from source via `cargo install`).
+if (Has-Command cargo-nextest) {
+    Write-Host "cargo-nextest already installed."
+} else {
+    Write-Host "Installing cargo-nextest (recommended test runner)..."
+    try {
+        $NextestZip = Join-Path $env:TEMP "nextest.zip"
+        Invoke-WebRequest -Uri "https://get.nexte.st/latest/windows" -OutFile $NextestZip -UseBasicParsing
+        Expand-Archive -Path $NextestZip -DestinationPath $CargoBin -Force
+        Remove-Item $NextestZip -Force
+        Write-Host "cargo-nextest installed."
+    } catch {
+        Write-Host "  cargo-nextest install failed (non-fatal): $_"
+    }
+}
+
 Write-Host "Developer tool setup complete."
 Write-Host "Note: On Windows you may need Visual Studio Build Tools (MSVC) for building cdylib with the MSVC toolchain. Install the 'Desktop development with C++' workload or use the GNU toolchain via MinGW if preferred."

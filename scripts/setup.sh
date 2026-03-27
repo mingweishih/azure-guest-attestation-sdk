@@ -26,14 +26,25 @@ echo "Ensuring stable toolchain is installed and active..."
 rustup toolchain install stable
 rustup default stable
 
-echo "Installing development tools via cargo..."
+echo "Installing development tools..."
 if ! command -v cargo >/dev/null 2>&1; then
   echo "ERROR: cargo not found in PATH after rustup install."
   echo "  Please run:  source \"\$HOME/.cargo/env\"  (or restart your shell)"
   exit 1
+fi
+
+# Install cargo-nextest using pre-built binaries (much faster than
+# compiling from source via `cargo install`).
+if command -v cargo-nextest >/dev/null 2>&1; then
+  echo "cargo-nextest already installed."
 else
   echo "Installing cargo-nextest (recommended test runner)..."
-  cargo install cargo-nextest --locked 2>/dev/null || echo "  cargo-nextest install failed (non-fatal)"
+  NEXTEST_URL="https://get.nexte.st/latest/linux"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    NEXTEST_URL="https://get.nexte.st/latest/mac"
+  fi
+  curl -LsSf "$NEXTEST_URL" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin" \
+    || echo "  cargo-nextest install failed (non-fatal)"
 fi
 
 echo ""
