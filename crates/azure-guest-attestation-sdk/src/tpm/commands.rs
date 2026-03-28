@@ -682,31 +682,33 @@ impl<T: RawTpm> TpmCommandExt for T {
         } else {
             // Runtime policy session must be TPM_SE.Policy (0x01) to authorize RSA_Decrypt.
             let session_handle = self.start_auth_session(0x01, TpmAlgId::Sha256.into())?;
-            self.policy_pcr(session_handle, pcrs)?;
 
-            let cmd_body = RsaDecryptCommand::new(key_handle, base_parameters.clone());
-            let handles = cmd_body.handle_values();
-            let dec_cmd = build_command_custom_sessions(
-                TpmCommandCode::RsaDecrypt,
-                &handles,
-                &[SessionEntry {
-                    handle: session_handle,
-                    auth: &[],
-                    attrs: 0,
-                }],
-                |b| {
-                    cmd_body.parameters.marshal(b);
-                },
-            );
+            // Helper closure: flush the session best-effort regardless of outcome.
+            let result = (|| {
+                self.policy_pcr(session_handle, pcrs)?;
 
-            let resp = self.transmit_raw(&dec_cmd)?;
+                let cmd_body = RsaDecryptCommand::new(key_handle, base_parameters.clone());
+                let handles = cmd_body.handle_values();
+                let dec_cmd = build_command_custom_sessions(
+                    TpmCommandCode::RsaDecrypt,
+                    &handles,
+                    &[SessionEntry {
+                        handle: session_handle,
+                        auth: &[],
+                        attrs: 0,
+                    }],
+                    |b| {
+                        cmd_body.parameters.marshal(b);
+                    },
+                );
 
-            // Flush policy session best-effort
-            let flush =
-                build_command_no_sessions(TpmCommandCode::FlushContext, &[session_handle], |_b| {});
-            let _ = self.transmit_raw(&flush);
+                self.transmit_raw(&dec_cmd)
+            })();
 
-            resp
+            // Always flush policy session, even on error
+            let _ = self.flush_context(session_handle);
+
+            result?
         };
 
         parse_tpm_rc_with_cmd(&resp, TpmCommandCode::RsaDecrypt)?;
@@ -718,25 +720,31 @@ impl<T: RawTpm> TpmCommandExt for T {
 
     fn compute_pcr_policy_digest(&self, pcrs: &[u32]) -> io::Result<Vec<u8>> {
         let session_handle = self.start_auth_session(0x03, TpmAlgId::Sha256.into())?;
-        self.policy_pcr(session_handle, pcrs)?;
-        let pgd_cmd = PolicyGetDigestCommand::new(session_handle);
-        let handles = pgd_cmd.handle_values();
-        let pgd = build_command_no_sessions(TpmCommandCode::PolicyGetDigest, &handles, |b| {
-            pgd_cmd.parameters.marshal(b);
-        });
-        let pgd_resp = self.transmit_raw(&pgd)?;
-        parse_tpm_rc_with_cmd(&pgd_resp, TpmCommandCode::PolicyGetDigest)?;
-        if pgd_resp.len() < 14 {
-            let _ = self.flush_context(session_handle);
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "PolicyGetDigest short response",
-            ));
-        }
-        let digest_resp = PolicyGetDigestResponse::from_bytes(&pgd_resp)?;
+
+        // Run all session operations, then always flush the trial session.
+        let result = (|| {
+            self.policy_pcr(session_handle, pcrs)?;
+            let pgd_cmd = PolicyGetDigestCommand::new(session_handle);
+            let handles = pgd_cmd.handle_values();
+            let pgd = build_command_no_sessions(TpmCommandCode::PolicyGetDigest, &handles, |b| {
+                pgd_cmd.parameters.marshal(b);
+            });
+            let pgd_resp = self.transmit_raw(&pgd)?;
+            parse_tpm_rc_with_cmd(&pgd_resp, TpmCommandCode::PolicyGetDigest)?;
+            if pgd_resp.len() < 14 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "PolicyGetDigest short response",
+                ));
+            }
+            let digest_resp = PolicyGetDigestResponse::from_bytes(&pgd_resp)?;
+            Ok(digest_resp.parameters.policy_digest.0)
+        })();
+
+        // Always flush the trial session, even on error
         let _ = self.flush_context(session_handle);
 
-        Ok(digest_resp.parameters.policy_digest.0)
+        result
     }
 
     fn start_auth_session(&self, session_type: u8, auth_hash_alg: u16) -> io::Result<u32> {
@@ -852,14 +860,19 @@ impl<T: RawTpm> TpmCommandExt for T {
         let resp = self.transmit_raw(&cmd)?;
         parse_tpm_rc_with_cmd(&resp, TpmCommandCode::CreatePrimary)?;
 
-        if resp.len() < 14 {
+        // Response layout (with sessions): header(10) + handle(4) + paramSize(4) + outPublic(2+N) + ...
+        // Minimum: 10 (header) + 4 (handle) + 4 (paramSize) + 2 (outPublic size) = 20
+        if resp.len() < 20 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                "CreatePrimary ECC short response",
+                format!(
+                    "CreatePrimary ECC response too short: {} bytes (need >= 20)",
+                    resp.len()
+                ),
             ));
         }
 
-        // Parse response: header (10) + handle (4) + paramSize (4) + parameters
+        // Parse response header (also validates return_code == 0)
         let (header, mut cursor) = crate::tpm::types::TpmResponseHeader::parse(&resp)?;
         if header.return_code != 0 {
             return Err(io::Error::other(format!(
@@ -868,6 +881,13 @@ impl<T: RawTpm> TpmCommandExt for T {
             )));
         }
 
+        // Object handle (4 bytes)
+        if cursor + 4 > resp.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CreatePrimary ECC: truncated at object handle",
+            ));
+        }
         let object_handle = u32::from_be_bytes([
             resp[cursor],
             resp[cursor + 1],
@@ -876,7 +896,13 @@ impl<T: RawTpm> TpmCommandExt for T {
         ]);
         cursor += 4;
 
-        // Skip paramSize
+        // paramSize (4 bytes)
+        if cursor + 4 > resp.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CreatePrimary ECC: truncated at paramSize",
+            ));
+        }
         let _param_size = u32::from_be_bytes([
             resp[cursor],
             resp[cursor + 1],
@@ -885,8 +911,24 @@ impl<T: RawTpm> TpmCommandExt for T {
         ]);
         cursor += 4;
 
-        // Read the outPublic size-prefixed blob
+        // outPublic: 2-byte size prefix + blob
+        if cursor + 2 > resp.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CreatePrimary ECC: truncated at outPublic size",
+            ));
+        }
         let out_public_size = u16::from_be_bytes([resp[cursor], resp[cursor + 1]]) as usize;
+        if cursor + 2 + out_public_size > resp.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "CreatePrimary ECC: outPublic claims {} bytes but only {} remain",
+                    out_public_size,
+                    resp.len() - cursor - 2
+                ),
+            ));
+        }
         let out_public = resp[cursor..cursor + 2 + out_public_size].to_vec();
 
         Ok(CreatedPrimary {
