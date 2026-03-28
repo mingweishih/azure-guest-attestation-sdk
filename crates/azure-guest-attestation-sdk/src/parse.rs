@@ -128,7 +128,7 @@ pub fn cvm_report(bytes: &[u8]) -> io::Result<(CvmAttestationReport, Option<Runt
 }
 
 /// Decoded claims from a JWT attestation token (header + payload).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TokenClaims {
     /// Raw JWT header JSON.
     pub header: serde_json::Value,

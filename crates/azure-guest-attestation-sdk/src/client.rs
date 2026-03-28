@@ -44,7 +44,8 @@ use crate::tpm::device::Tpm;
 ///
 /// This is an enum rather than a trait object so the set of providers is
 /// exhaustive and callers don't need to import extra traits.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Provider {
     /// Microsoft Azure Attestation (MAA) service.
     Maa {
@@ -84,7 +85,7 @@ pub enum DeviceType {
 ///
 /// The `Default` implementation selects [`DeviceType::Tpm`] with OS-default
 /// PCR selection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceEvidenceOptions {
     /// Which device to collect evidence from.
     pub device_type: DeviceType,
@@ -106,6 +107,7 @@ impl Default for DeviceEvidenceOptions {
 
 /// Which kind of endorsement to retrieve from the platform metadata service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EndorsementKind {
     /// AMD SEV-SNP VCEK certificate chain (from Azure THIM / IMDS).
     Vcek,
@@ -115,7 +117,7 @@ pub enum EndorsementKind {
 ///
 /// All fields are optional; the `Default` implementation produces a
 /// zero-configuration request that auto-detects the TEE type.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CvmEvidenceOptions {
     /// Optional user data (0–64 bytes) to embed in the TEE report.
     pub user_data: Option<Vec<u8>>,
@@ -125,7 +127,7 @@ pub struct CvmEvidenceOptions {
 }
 
 /// Options for [`AttestationClient::attest_guest`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AttestOptions {
     /// Client-supplied key/value payload to include in the attestation request.
     /// Each value will be base64-encoded in the outgoing JSON.
@@ -154,7 +156,7 @@ pub struct CvmEvidence {
 }
 
 /// Endorsement retrieved from the platform metadata service.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endorsement {
     /// The kind of endorsement this represents.
     pub kind: EndorsementKind,
@@ -163,7 +165,7 @@ pub struct Endorsement {
 }
 
 /// Result of a successful attestation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttestResult {
     /// JWT token returned by the attestation provider (if the provider returns one).
     pub token: Option<String>,
@@ -180,7 +182,7 @@ pub struct AttestResult {
 /// This is the Rust-side representation of the JSON request body.
 /// Use [`AttestationClient::create_attestation_report`] to build one,
 /// or construct it manually from collected artifacts.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttestationReport {
     /// Serialized JSON request body.
     pub json: String,
