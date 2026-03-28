@@ -170,3 +170,25 @@ jobs:
           cargo llvm-cov --workspace --features vtpm-tests \
             --ignore-filename-regex '(src/lib\.rs|azure-guest-attest/src/main\.rs)$' \
             --fail-under-lines 60
+
+  # --------------------------------------------------------------------------
+  # Security audit — check dependencies for known vulnerabilities
+  # --------------------------------------------------------------------------
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # --------------------------------------------------------------------------
+  # Dependency linting — license compliance & duplicate detection
+  # --------------------------------------------------------------------------
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
