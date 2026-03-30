@@ -976,15 +976,27 @@ async fn api_endorsement_get(
     tokio::task::spawn_blocking(move || {
         let client = thim_client(q.region.as_deref());
         match client.get_endorsement(&mrtd) {
-            Ok(resp) => ApiResponse::ok(serde_json::json!({
-                "mrtd": resp.mrtd,
-                "content_type": resp.content_type,
-                "size_bytes": resp.data.len(),
-                "base64": base64::Engine::encode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &resp.data,
-                ),
-            })),
+            Ok(resp) => {
+                let mut result = serde_json::json!({
+                    "mrtd": resp.mrtd,
+                    "content_type": resp.content_type,
+                    "size_bytes": resp.data.len(),
+                    "base64": base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &resp.data,
+                    ),
+                });
+                // Try to extract JSON payload from COSE_Sign1 envelope
+                match resp.payload_json() {
+                    Ok(json) => {
+                        result["payload"] = json;
+                    }
+                    Err(e) => {
+                        result["payload_error"] = serde_json::json!(e.to_string());
+                    }
+                }
+                ApiResponse::ok(result)
+            }
             Err(e) => ApiResponse::err(format!("Failed to get endorsement: {e}")),
         }
     })
@@ -1017,15 +1029,26 @@ async fn api_endorsement_from_platform(
 
         let client = thim_client(q.region.as_deref());
         match client.get_endorsement_for_report(&report.tee_report) {
-            Ok(resp) => ApiResponse::ok(serde_json::json!({
-                "mrtd": resp.mrtd,
-                "content_type": resp.content_type,
-                "size_bytes": resp.data.len(),
-                "base64": base64::Engine::encode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &resp.data,
-                ),
-            })),
+            Ok(resp) => {
+                let mut result = serde_json::json!({
+                    "mrtd": resp.mrtd,
+                    "content_type": resp.content_type,
+                    "size_bytes": resp.data.len(),
+                    "base64": base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &resp.data,
+                    ),
+                });
+                match resp.payload_json() {
+                    Ok(json) => {
+                        result["payload"] = json;
+                    }
+                    Err(e) => {
+                        result["payload_error"] = serde_json::json!(e.to_string());
+                    }
+                }
+                ApiResponse::ok(result)
+            }
             Err(e) => ApiResponse::err(format!("Failed to get endorsement: {e}")),
         }
     })

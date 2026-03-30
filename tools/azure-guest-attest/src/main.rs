@@ -232,6 +232,9 @@ enum EndorsementAction {
         /// Output base64 instead of saving raw binary
         #[arg(long)]
         base64: bool,
+        /// Parse and display the JSON payload from the COSE_Sign1 envelope
+        #[arg(long)]
+        json: bool,
     },
     /// Extract MRTD from a TDX report file and fetch its endorsement
     FromReport {
@@ -240,12 +243,18 @@ enum EndorsementAction {
         /// Output base64 instead of saving raw binary
         #[arg(long)]
         base64: bool,
+        /// Parse and display the JSON payload from the COSE_Sign1 envelope
+        #[arg(long)]
+        json: bool,
     },
     /// Extract MRTD from the platform TDX report (via TPM) and fetch its endorsement
     FromPlatform {
         /// Output base64 instead of saving raw binary
         #[arg(long)]
         base64: bool,
+        /// Parse and display the JSON payload from the COSE_Sign1 envelope
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1148,22 +1157,26 @@ fn main() -> anyhow::Result<()> {
                         writeln!(writer, "  {m}")?;
                     }
                 }
-                EndorsementAction::Get { mrtd, base64 } => {
+                EndorsementAction::Get { mrtd, base64, json } => {
                     let resp = client
                         .get_endorsement(&mrtd)
                         .map_err(|e| anyhow::anyhow!("failed to get endorsement: {e}"))?;
-                    write_endorsement(&resp, base64, &mut writer)?;
+                    write_endorsement(&resp, base64, json, &mut writer)?;
                 }
-                EndorsementAction::FromReport { report, base64 } => {
+                EndorsementAction::FromReport {
+                    report,
+                    base64,
+                    json,
+                } => {
                     let report_bytes = std::fs::read(&report)
                         .with_context(|| format!("reading {}", report.display()))?;
                     let resp = client
                         .get_endorsement_for_report(&report_bytes)
                         .map_err(|e| anyhow::anyhow!("failed to get endorsement: {e}"))?;
                     writeln!(writer, "MRTD: {}", resp.mrtd)?;
-                    write_endorsement(&resp, base64, &mut writer)?;
+                    write_endorsement(&resp, base64, json, &mut writer)?;
                 }
-                EndorsementAction::FromPlatform { base64 } => {
+                EndorsementAction::FromPlatform { base64, json } => {
                     let tpm =
                         Tpm::open().map_err(|e| anyhow::anyhow!("Failed to open TPM: {e}"))?;
                     let (report, _) =
@@ -1172,7 +1185,7 @@ fn main() -> anyhow::Result<()> {
                         .get_endorsement_for_report(&report.tee_report)
                         .map_err(|e| anyhow::anyhow!("failed to get endorsement: {e}"))?;
                     writeln!(writer, "MRTD: {}", resp.mrtd)?;
-                    write_endorsement(&resp, base64, &mut writer)?;
+                    write_endorsement(&resp, base64, json, &mut writer)?;
                 }
             }
         }
@@ -1622,6 +1635,7 @@ fn load_event_logs_with_windows(
 fn write_endorsement(
     resp: &azure_guest_attestation_sdk::endorsement::EndorsementResponse,
     as_base64: bool,
+    show_json: bool,
     writer: &mut dyn Write,
 ) -> anyhow::Result<()> {
     writeln!(
@@ -1630,7 +1644,16 @@ fn write_endorsement(
         resp.content_type,
         resp.data.len()
     )?;
-    if as_base64 {
+    if show_json {
+        match resp.payload_json() {
+            Ok(json) => {
+                writeln!(writer, "{}", serde_json::to_string_pretty(&json)?)?;
+            }
+            Err(e) => {
+                writeln!(writer, "(failed to extract JSON payload: {e})")?;
+            }
+        }
+    } else if as_base64 {
         let encoded = base64::engine::general_purpose::STANDARD.encode(&resp.data);
         writeln!(writer, "{encoded}")?;
     } else if writer_is_terminal(writer) {

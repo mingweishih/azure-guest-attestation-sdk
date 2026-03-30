@@ -147,7 +147,9 @@ function renderObject(obj, depth = 0) {
 
         if (typeof value === 'object' && value !== null) {
             // Check for special renderable fields
-            if (key === 'tee_report_pretty' || key === 'pretty') {
+            if (key === 'payload') {
+                html += `<td><div class="pretty-block"><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></div></td>`;
+            } else if (key === 'tee_report_pretty' || key === 'pretty') {
                 html += `<td><div class="pretty-block"><pre>${escapeHtml(String(value))}</pre></div></td>`;
             } else if (key === 'raw_report_hex') {
                 const hexStr = String(value);
