@@ -181,6 +181,24 @@ async fn api_index() -> Json<serde_json::Value> {
                 "path": "/api/parse-token",
                 "description": "Decode a JWT attestation token",
                 "body_params": ["token"]
+            },
+            {
+                "method": "GET",
+                "path": "/api/endorsement/mrtds",
+                "description": "List known TDX MRTDs from Azure THIM",
+                "query_params": ["region"]
+            },
+            {
+                "method": "GET",
+                "path": "/api/endorsement/tdx/:mrtd",
+                "description": "Fetch TDX endorsement (CoRIM) for a specific MRTD hex",
+                "query_params": ["region"]
+            },
+            {
+                "method": "GET",
+                "path": "/api/endorsement/from-platform",
+                "description": "Extract MRTD from platform TDX report and fetch its endorsement",
+                "query_params": ["region"]
             }
         ]
     }))
@@ -912,6 +930,110 @@ async fn api_parse_token(JsonExtract(req): JsonExtract<ParseTokenRequest>) -> Js
 }
 
 // ---------------------------------------------------------------------------
+// API: TDX Endorsement (THIM)
+// ---------------------------------------------------------------------------
+
+/// Query parameters for endorsement endpoints.
+#[derive(Deserialize)]
+struct EndorsementQuery {
+    /// Azure region (default: westus)
+    region: Option<String>,
+}
+
+/// Query parameters for endorsement-from-report endpoint.
+#[derive(Deserialize)]
+struct EndorsementFromReportQuery {
+    /// Azure region (default: westus)
+    region: Option<String>,
+}
+
+fn thim_client(region: Option<&str>) -> azure_guest_attestation_sdk::endorsement::ThimClient {
+    let r = region.unwrap_or(azure_guest_attestation_sdk::endorsement::DEFAULT_REGION);
+    azure_guest_attestation_sdk::endorsement::ThimClient::new(r)
+}
+
+async fn api_endorsement_mrtds(
+    axum::extract::Query(q): axum::extract::Query<EndorsementQuery>,
+) -> Json<ApiResponse> {
+    tokio::task::spawn_blocking(move || {
+        let client = thim_client(q.region.as_deref());
+        match client.list_mrtds() {
+            Ok(mrtds) => ApiResponse::ok(serde_json::json!({
+                "count": mrtds.len(),
+                "mrtds": mrtds,
+            })),
+            Err(e) => ApiResponse::err(format!("Failed to list MRTDs: {e}")),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| ApiResponse::err(format!("Task failed: {e}")))
+}
+
+async fn api_endorsement_get(
+    axum::extract::Path(mrtd): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<EndorsementQuery>,
+) -> Json<ApiResponse> {
+    tokio::task::spawn_blocking(move || {
+        let client = thim_client(q.region.as_deref());
+        match client.get_endorsement(&mrtd) {
+            Ok(resp) => ApiResponse::ok(serde_json::json!({
+                "mrtd": resp.mrtd,
+                "content_type": resp.content_type,
+                "size_bytes": resp.data.len(),
+                "base64": base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &resp.data,
+                ),
+            })),
+            Err(e) => ApiResponse::err(format!("Failed to get endorsement: {e}")),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| ApiResponse::err(format!("Task failed: {e}")))
+}
+
+async fn api_endorsement_from_platform(
+    axum::extract::Query(q): axum::extract::Query<EndorsementFromReportQuery>,
+) -> Json<ApiResponse> {
+    tokio::task::spawn_blocking(move || {
+        let tpm = match Tpm::open() {
+            Ok(t) => t,
+            Err(e) => return ApiResponse::err(format!("Failed to open TPM: {e}")),
+        };
+
+        let (report, _) = match attestation::get_cvm_report(&tpm, None) {
+            Ok(r) => r,
+            Err(e) => return ApiResponse::err(format!("Failed to get CVM report: {e}")),
+        };
+
+        if report.runtime_claims_header.report_type
+            != azure_guest_attestation_sdk::report::CvmReportType::TdxVmReport
+        {
+            return ApiResponse::err(format!(
+                "Not a TDX VM (detected: {:?})",
+                report.runtime_claims_header.report_type
+            ));
+        }
+
+        let client = thim_client(q.region.as_deref());
+        match client.get_endorsement_for_report(&report.tee_report) {
+            Ok(resp) => ApiResponse::ok(serde_json::json!({
+                "mrtd": resp.mrtd,
+                "content_type": resp.content_type,
+                "size_bytes": resp.data.len(),
+                "base64": base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &resp.data,
+                ),
+            })),
+            Err(e) => ApiResponse::err(format!("Failed to get endorsement: {e}")),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| ApiResponse::err(format!("Task failed: {e}")))
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1322,7 +1444,14 @@ async fn main() {
         .route("/api/isolation-evidence", get(api_isolation_evidence))
         .route("/api/guest-attest", post(api_guest_attest))
         .route("/api/tee-attest", post(api_tee_attest))
-        .route("/api/parse-token", post(api_parse_token));
+        .route("/api/parse-token", post(api_parse_token))
+        // TDX endorsement (THIM)
+        .route("/api/endorsement/mrtds", get(api_endorsement_mrtds))
+        .route("/api/endorsement/tdx/:mrtd", get(api_endorsement_get))
+        .route(
+            "/api/endorsement/from-platform",
+            get(api_endorsement_from_platform),
+        );
 
     // Determine TLS mode
     let use_self_signed = cli.tls_self_signed || cli.tls_self_signed_dir.is_some();

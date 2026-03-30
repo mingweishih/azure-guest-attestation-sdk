@@ -42,6 +42,8 @@
 
 // ---- Public API modules ---------------------------------------------------
 pub mod client;
+/// TDX endorsement retrieval from Azure THIM.
+pub mod endorsement;
 pub mod error;
 pub mod parse;
 
