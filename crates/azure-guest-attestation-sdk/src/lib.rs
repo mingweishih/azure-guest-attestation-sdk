@@ -42,6 +42,8 @@
 
 // ---- Public API modules ---------------------------------------------------
 pub mod client;
+/// Minimal COSE_Sign1 (RFC 9052) parser.
+pub mod cose;
 /// TDX endorsement retrieval from Azure THIM.
 pub mod endorsement;
 pub mod error;
