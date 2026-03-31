@@ -231,6 +231,22 @@ main#content {
     cursor: not-allowed;
 }
 
+.btn-secondary {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    margin-left: 0.5rem;
+}
+
+.btn-secondary:hover {
+    background: var(--border);
+    color: var(--text-primary);
+}
+
+.btn-secondary:active {
+    background: var(--bg-input);
+}
+
 /* Results */
 .result {
     margin-top: 0.5rem;

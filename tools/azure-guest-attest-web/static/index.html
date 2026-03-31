@@ -23,7 +23,6 @@
                 <button class="nav-btn" data-panel="cvm-report">CVM Report</button>
                 <button class="nav-btn" data-panel="tee-report">TEE Report</button>
                 <button class="nav-btn" data-panel="td-quote">TD Quote</button>
-                <button class="nav-btn" data-panel="isolation-evidence">Isolation Evidence</button>
             </div>
             <div class="nav-section">
                 <h3>TPM</h3>
@@ -39,6 +38,7 @@
             </div>
             <div class="nav-section">
                 <h3>Endorsement</h3>
+                <button class="nav-btn" data-panel="isolation-evidence">SNP VCEK Chain</button>
                 <button class="nav-btn" data-panel="endorsement">TDX Endorsement</button>
             </div>
             <div class="nav-section">
@@ -97,12 +97,12 @@
                 <div class="result" id="result-td-quote"></div>
             </div>
 
-            <!-- Isolation Evidence -->
+            <!-- SNP VCEK Chain (Isolation Evidence) -->
             <div class="panel" id="panel-isolation-evidence">
-                <h2>Isolation Evidence</h2>
-                <p class="description">Fetch platform isolation evidence: VCEK certificate chain (SNP) or TD Quote (TDX).</p>
+                <h2>SNP VCEK Certificate Chain</h2>
+                <p class="description">Fetch the VCEK certificate chain from Azure IMDS. Only available on AMD SEV-SNP CVMs. On TDX platforms, use the TD Quote panel instead.</p>
                 <div class="actions">
-                    <button class="btn btn-primary" onclick="runIsolationEvidence()">Fetch Evidence</button>
+                    <button class="btn btn-primary" onclick="runIsolationEvidence()">Fetch VCEK Chain</button>
                 </div>
                 <div class="result" id="result-isolation-evidence"></div>
             </div>
@@ -148,6 +148,8 @@
                 <p class="description">Parse the platform TPM event log and replay PCR values. Reads from standard OS locations.</p>
                 <div class="actions">
                     <button class="btn btn-primary" onclick="runEventLog()">Parse Event Log</button>
+                    <button class="btn btn-secondary" onclick="runVerifyPcrs()">Verify PCRs</button>
+                    <button class="btn btn-secondary" onclick="downloadEventLog()">Download Raw</button>
                 </div>
                 <div class="result" id="result-event-log"></div>
             </div>
