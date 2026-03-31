@@ -1697,6 +1697,7 @@ mod tests {
         let endorsement = Endorsement {
             kind: EndorsementKind::Vcek,
             data: b"provided-vcek-chain".to_vec(),
+            endorsement_response: None,
         };
         let (payload, rtype) =
             build_tee_only_payload_from_evidence(&evidence, Some(&endorsement)).unwrap();

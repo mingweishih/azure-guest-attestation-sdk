@@ -107,10 +107,20 @@ impl Default for DeviceEvidenceOptions {
 }
 
 /// Which kind of endorsement to retrieve from the platform metadata service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EndorsementKind {
     /// AMD SEV-SNP VCEK certificate chain (from Azure THIM / IMDS).
     Vcek,
+    /// TDX endorsement (COSE/CoRIM) from Azure THIM.
+    ///
+    /// The MRTD is automatically extracted from the platform TDX report
+    /// (read via TPM).  The optional `region` selects the THIM endpoint;
+    /// when `None`, [`endorsement::DEFAULT_REGION`](crate::endorsement::DEFAULT_REGION)
+    /// (`"westus"`) is used.
+    TdxMrtd {
+        /// Azure region for the THIM endpoint (e.g. `"eastus"`).
+        region: Option<String>,
+    },
 }
 
 /// Options for [`AttestationClient::get_cvm_evidence`].
@@ -160,8 +170,13 @@ pub struct CvmEvidence {
 pub struct Endorsement {
     /// The kind of endorsement this represents.
     pub kind: EndorsementKind,
-    /// Raw endorsement data (e.g. PEM certificate chain for VCEK).
+    /// Raw endorsement data (e.g. PEM certificate chain for VCEK,
+    /// or COSE/CoRIM binary for TDX).
     pub data: Vec<u8>,
+    /// For TDX endorsements, the full [`EndorsementResponse`] from THIM
+    /// (includes MRTD, content-type, and helpers like
+    /// [`payload_json()`](crate::endorsement::EndorsementResponse::payload_json)).
+    pub endorsement_response: Option<crate::endorsement::EndorsementResponse>,
 }
 
 /// Result of a successful attestation.
@@ -376,14 +391,39 @@ impl AttestationClient {
 
     /// Retrieve an endorsement from the platform metadata service.
     ///
-    /// Currently supports [`EndorsementKind::Vcek`] which fetches the AMD
-    /// SEV-SNP VCEK certificate chain from Azure THIM / IMDS.
+    /// Currently supports:
+    /// - [`EndorsementKind::Vcek`] — fetches the AMD SEV-SNP VCEK certificate
+    ///   chain from Azure THIM / IMDS.
+    /// - [`EndorsementKind::TdxMrtd`] — reads the platform TDX report via TPM,
+    ///   extracts the MRTD, and fetches the matching endorsement (COSE/CoRIM)
+    ///   from Azure THIM.
     pub fn get_endorsement(&self, kind: EndorsementKind) -> crate::error::Result<Endorsement> {
         match kind {
             EndorsementKind::Vcek => {
                 let imds = guest_attest::ImdsClient::new();
                 let chain = imds.get_vcek_chain()?;
-                Ok(Endorsement { kind, data: chain })
+                Ok(Endorsement {
+                    kind,
+                    data: chain,
+                    endorsement_response: None,
+                })
+            }
+            EndorsementKind::TdxMrtd { ref region } => {
+                let (report, _) = attestation::get_cvm_report(&self.tpm, None)?;
+                let thim_client = match region {
+                    Some(r) => crate::endorsement::ThimClient::new(r),
+                    None => crate::endorsement::ThimClient::default(),
+                };
+                let resp = thim_client
+                    .get_endorsement_for_report(&report.tee_report)
+                    .map_err(|e| {
+                        SdkError::Other(format!("failed to fetch TDX endorsement from THIM: {e}"))
+                    })?;
+                Ok(Endorsement {
+                    kind,
+                    data: resp.data.clone(),
+                    endorsement_response: Some(resp),
+                })
             }
         }
     }
@@ -717,6 +757,22 @@ mod tests {
     #[test]
     fn endorsement_kind_eq() {
         assert_eq!(EndorsementKind::Vcek, EndorsementKind::Vcek);
+        assert_eq!(
+            EndorsementKind::TdxMrtd { region: None },
+            EndorsementKind::TdxMrtd { region: None }
+        );
+        assert_eq!(
+            EndorsementKind::TdxMrtd {
+                region: Some("eastus".into())
+            },
+            EndorsementKind::TdxMrtd {
+                region: Some("eastus".into())
+            }
+        );
+        assert_ne!(
+            EndorsementKind::Vcek,
+            EndorsementKind::TdxMrtd { region: None }
+        );
     }
 
     #[test]
@@ -795,6 +851,7 @@ mod tests {
         let endorsement = Endorsement {
             kind: EndorsementKind::Vcek,
             data: vec![0xDD; 128],
+            endorsement_response: None,
         };
         let info = build_isolation_info(Some(&evidence), Some(&endorsement)).unwrap();
         assert!(matches!(info.vm_type, IsolationType::SevSnp));
@@ -991,6 +1048,7 @@ mod tests {
         let e = Endorsement {
             kind: EndorsementKind::Vcek,
             data: vec![1, 2, 3],
+            endorsement_response: None,
         };
         let s = format!("{e:?}");
         assert!(s.contains("Vcek"));
@@ -1001,10 +1059,12 @@ mod tests {
         let e = Endorsement {
             kind: EndorsementKind::Vcek,
             data: vec![1, 2, 3],
+            endorsement_response: None,
         };
         let e2 = e.clone();
         assert_eq!(e2.kind, EndorsementKind::Vcek);
         assert_eq!(e2.data, vec![1, 2, 3]);
+        assert!(e2.endorsement_response.is_none());
     }
 
     // -----------------------------------------------------------------------
