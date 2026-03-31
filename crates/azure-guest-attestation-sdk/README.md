@@ -17,6 +17,8 @@ Rust implementation of the Azure Attestation SDK for Confidential VMs (CVM) and 
 - **ECC Support**: ECDSA P-256 signing keys
 - **TEE Report Parsing**: Intel TDX, AMD SEV-SNP, VBS
 - **High-level `AttestationClient` API** with MAA integration
+- **TDX endorsement retrieval** from Azure THIM (`endorsement` module / `ThimClient`)
+- **COSE_Sign1 payload extraction** (`cose` module — RFC 9052, no external CBOR crate)
 - **TrustedLaunch VM support** — auto-detected when CVM report is absent
 - **Stateless `parse` module** for offline report inspection
 - **Cross-Platform**: Windows and Linux support
@@ -151,6 +153,8 @@ cargo clippy -p azure-guest-attestation-sdk --features vtpm-tests --all-targets 
 | Module | Description |
 |--------|-------------|
 | `client` | `AttestationClient` — high-level API, `DeviceEvidence`, `CvmEvidence`, `Provider` |
+| `cose` | Minimal COSE_Sign1 parser (RFC 9052) — extracts payload from CBOR-encoded envelopes |
+| `endorsement` | `ThimClient` for TDX endorsement retrieval from Azure THIM, `EndorsementResponse` |
 | `parse` | Stateless parsing (reports, quotes, JWT tokens) |
 | `tpm::device` | TPM device access abstraction |
 | `tpm::commands` | `TpmCommandExt` trait with TPM command implementations |

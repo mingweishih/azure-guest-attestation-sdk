@@ -36,12 +36,16 @@
 //! | Level | Entry point | Description |
 //! |-------|------------|-------------|
 //! | **High** | [`AttestationClient::attest_guest`] | One-shot: collect evidence → build report → submit → token |
-//! | **Mid** | [`AttestationClient::get_cvm_evidence`], [`get_device_evidence`](AttestationClient::get_device_evidence), [`create_attestation_report`](AttestationClient::create_attestation_report) | Collect and assemble artifacts separately |
-//! | **Low** | [`tpm`], [`tee_report`], [`report`] | Direct TPM commands, TEE report parsing |
+//! | **Mid** | [`AttestationClient::get_cvm_evidence`], [`get_device_evidence`](AttestationClient::get_device_evidence), [`get_endorsement`](AttestationClient::get_endorsement), [`create_attestation_report`](AttestationClient::create_attestation_report) | Collect and assemble artifacts separately |
+//! | **Low** | [`tpm`], [`tee_report`], [`report`], [`endorsement`], [`cose`] | Direct TPM commands, TEE report parsing, THIM client, COSE parser |
 //! | **Parse** | [`parse`] | Stateless parsing of reports, quotes, and tokens |
 
 // ---- Public API modules ---------------------------------------------------
 pub mod client;
+/// Minimal COSE_Sign1 (RFC 9052) parser.
+pub mod cose;
+/// TDX endorsement retrieval from Azure THIM.
+pub mod endorsement;
 pub mod error;
 pub mod parse;
 

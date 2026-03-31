@@ -13,7 +13,8 @@ Azure Attestation SDK for Confidential VMs (Intel TDX, AMD SEV-SNP) and TrustedL
 ├── crates/
 │   └── azure-guest-attestation-sdk/       # Core library (publishable to crates.io)
 └── tools/
-    └── azure-guest-attest/                 # CLI tool
+    ├── azure-guest-attest/                 # CLI tool
+    └── azure-guest-attest-web/             # Web UI (axum + HTML/JS)
 ```
 
 ## Quick Start
@@ -132,6 +133,8 @@ Features:
 - TEE report parsing (Intel TDX, AMD SEV-SNP, VBS)
 - High-level `AttestationClient` API with decomposed evidence collection and MAA integration
 - `DeviceEvidence` / `CvmEvidence` types for step-by-step attestation workflows
+- TDX endorsement retrieval from Azure THIM (`endorsement` module / `ThimClient`)
+- COSE_Sign1 payload extraction (`cose` module — RFC 9052)
 - Stateless `parse` module for offline report / token inspection
 - ECC P-256 signing keys
 
@@ -141,6 +144,17 @@ Command-line tool for guest attestation operations.
 
 ```bash
 azure-guest-attest --help
+```
+
+### [azure-guest-attest-web](tools/azure-guest-attest-web/)
+
+Browser-based interactive attestation tool built with Axum. Serves a web UI
+and a REST API that wraps the SDK's attestation, endorsement, and parsing
+capabilities.
+
+```bash
+cargo run -p azure-guest-attest-web
+# Open http://localhost:8080
 ```
 
 ## CLI Usage (`azure-guest-attest`)
@@ -204,6 +218,20 @@ target/release/azure-guest-attest --help
    * `--raw` outputs the report bytes (hex) trimmed to its known size for the report type.
    * Without `--raw`, a minimal parsed summary is printed depending on report type (SNP/TDX/VBS).
    * Report type is inferred from the embedded runtime claims header field.
+
+* `azure-guest-attest td-quote [--base64] [--save <PATH>] [--summary] [--no-signature]`
+   * Fetch a TDX quote from IMDS using the platform TEE report and display/save it.
+
+* `azure-guest-attest endorsement [--region <REGION>] <SUBCOMMAND>`
+   * Query TDX endorsement data from Azure Trusted Hardware Identity Management (THIM).
+   * `--region` selects the THIM endpoint (default: `westus`).
+   * Subcommands:
+      * `list-mrtds` — List all known endorsed TDX MRTD values.
+      * `get <MRTD> [--base64] [--json]` — Fetch endorsement for a specific MRTD hex string.
+      * `from-report <FILE> [--base64] [--json]` — Extract MRTD from a raw TDX report file and fetch its endorsement.
+      * `from-platform [--base64] [--json]` — Extract MRTD from the platform TDX report (via TPM) and fetch its endorsement.
+   * `--json` parses and displays the JSON payload from the COSE_Sign1 envelope.
+   * `--base64` outputs the raw endorsement as base64 instead of hex.
 
 Global option: `-o/--out <FILE>` to write output to a file instead of stdout.
 

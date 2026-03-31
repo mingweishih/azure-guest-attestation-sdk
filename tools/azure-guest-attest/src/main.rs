@@ -211,6 +211,51 @@ enum Commands {
         #[arg(long)]
         show_request: bool,
     },
+    /// Query TDX endorsement data from Azure THIM
+    Endorsement {
+        #[command(subcommand)]
+        action: EndorsementAction,
+        /// Azure region (default: westus)
+        #[arg(long, default_value = "westus", global = true)]
+        region: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum EndorsementAction {
+    /// List all known TDX MRTDs from THIM
+    ListMrtds,
+    /// Fetch endorsement for a specific MRTD (hex)
+    Get {
+        /// MRTD value (96-character uppercase hex string)
+        mrtd: String,
+        /// Output base64 instead of saving raw binary
+        #[arg(long)]
+        base64: bool,
+        /// Parse and display the JSON payload from the COSE_Sign1 envelope
+        #[arg(long)]
+        json: bool,
+    },
+    /// Extract MRTD from a TDX report file and fetch its endorsement
+    FromReport {
+        /// Path to a raw TDX report blob (>= 1024 bytes)
+        report: PathBuf,
+        /// Output base64 instead of saving raw binary
+        #[arg(long)]
+        base64: bool,
+        /// Parse and display the JSON payload from the COSE_Sign1 envelope
+        #[arg(long)]
+        json: bool,
+    },
+    /// Extract MRTD from the platform TDX report (via TPM) and fetch its endorsement
+    FromPlatform {
+        /// Output base64 instead of saving raw binary
+        #[arg(long)]
+        base64: bool,
+        /// Parse and display the JSON payload from the COSE_Sign1 envelope
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -1097,6 +1142,53 @@ fn main() -> anyhow::Result<()> {
                 decode_and_print_jwt(&token_or_body, &mut *writer)?;
             }
         }
+        Commands::Endorsement { action, region } => {
+            use azure_guest_attestation_sdk::endorsement::ThimClient;
+
+            let client = ThimClient::new(&region);
+
+            match action {
+                EndorsementAction::ListMrtds => {
+                    let mrtds = client
+                        .list_mrtds()
+                        .map_err(|e| anyhow::anyhow!("failed to list MRTDs: {e}"))?;
+                    writeln!(writer, "Known TDX MRTDs ({} entries):", mrtds.len())?;
+                    for m in &mrtds {
+                        writeln!(writer, "  {m}")?;
+                    }
+                }
+                EndorsementAction::Get { mrtd, base64, json } => {
+                    let resp = client
+                        .get_endorsement(&mrtd)
+                        .map_err(|e| anyhow::anyhow!("failed to get endorsement: {e}"))?;
+                    write_endorsement(&resp, base64, json, &mut writer)?;
+                }
+                EndorsementAction::FromReport {
+                    report,
+                    base64,
+                    json,
+                } => {
+                    let report_bytes = std::fs::read(&report)
+                        .with_context(|| format!("reading {}", report.display()))?;
+                    let resp = client
+                        .get_endorsement_for_report(&report_bytes)
+                        .map_err(|e| anyhow::anyhow!("failed to get endorsement: {e}"))?;
+                    writeln!(writer, "MRTD: {}", resp.mrtd)?;
+                    write_endorsement(&resp, base64, json, &mut writer)?;
+                }
+                EndorsementAction::FromPlatform { base64, json } => {
+                    let tpm =
+                        Tpm::open().map_err(|e| anyhow::anyhow!("Failed to open TPM: {e}"))?;
+                    let (report, _) =
+                        azure_guest_attestation_sdk::tpm::attestation::get_cvm_report(&tpm, None)?;
+                    let resp = client
+                        .get_endorsement_for_report(&report.tee_report)
+                        .map_err(|e| anyhow::anyhow!("failed to get endorsement: {e}"))?;
+                    writeln!(writer, "MRTD: {}", resp.mrtd)?;
+                    write_endorsement(&resp, base64, json, &mut writer)?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1538,6 +1630,47 @@ fn load_event_logs_with_windows(
 
     let (logs, sources) = event_log::load_event_logs(None)?;
     Ok((logs, sources))
+}
+
+fn write_endorsement(
+    resp: &azure_guest_attestation_sdk::endorsement::EndorsementResponse,
+    as_base64: bool,
+    show_json: bool,
+    writer: &mut dyn Write,
+) -> anyhow::Result<()> {
+    writeln!(
+        writer,
+        "Content-Type: {}  ({} bytes)",
+        resp.content_type,
+        resp.data.len()
+    )?;
+    if show_json {
+        match resp.payload_json() {
+            Ok(json) => {
+                writeln!(writer, "{}", serde_json::to_string_pretty(&json)?)?;
+            }
+            Err(e) => {
+                writeln!(writer, "(failed to extract JSON payload: {e})")?;
+            }
+        }
+    } else if as_base64 {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&resp.data);
+        writeln!(writer, "{encoded}")?;
+    } else if writer_is_terminal(writer) {
+        // Don't dump binary to a terminal; show hex instead.
+        writeln!(writer, "{}", hex::encode(&resp.data))?;
+    } else {
+        writer.write_all(&resp.data)?;
+    }
+    Ok(())
+}
+
+/// Check if the writer is stdout connected to a terminal.
+fn writer_is_terminal(writer: &dyn Write) -> bool {
+    // We use stdout().is_terminal() as a heuristic — the writer could be a
+    // file, but the caller already wraps File vs stdout in main().
+    let _ = writer;
+    io::stdout().is_terminal()
 }
 
 #[cfg(test)]
