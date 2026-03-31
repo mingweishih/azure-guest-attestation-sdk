@@ -156,13 +156,23 @@ async fn api_index() -> Json<serde_json::Value> {
             },
             {
                 "method": "GET",
+                "path": "/api/event-log/raw",
+                "description": "Download raw event log binary"
+            },
+            {
+                "method": "GET",
+                "path": "/api/verify-pcrs",
+                "description": "Compare replayed event log PCRs against live TPM PCR values (SHA-256)"
+            },
+            {
+                "method": "GET",
                 "path": "/api/td-quote",
                 "description": "Intel TDX quote (TDX CVMs only)"
             },
             {
                 "method": "GET",
                 "path": "/api/isolation-evidence",
-                "description": "Platform isolation evidence (VCEK chain or TD quote)"
+                "description": "Platform isolation evidence (VCEK chain for SNP)"
             },
             {
                 "method": "POST",
@@ -638,6 +648,126 @@ async fn api_event_log() -> Json<ApiResponse> {
 }
 
 // ---------------------------------------------------------------------------
+// API: Event Log — raw binary download
+// ---------------------------------------------------------------------------
+
+async fn api_event_log_raw() -> impl IntoResponse {
+    match tokio::task::spawn_blocking(load_event_log).await {
+        Ok(Ok(Some(bytes))) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/octet-stream"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"binary_bios_measurements\"",
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            "No event log found at standard platform locations",
+        )
+            .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load event log: {e}"),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Task failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// API: Verify PCRs — compare replayed event log PCRs against live TPM PCRs
+// ---------------------------------------------------------------------------
+
+async fn api_verify_pcrs() -> Json<ApiResponse> {
+    tokio::task::spawn_blocking(|| {
+        // 1. Load and parse event log
+        let log_bytes = match load_event_log() {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                return ApiResponse::err("No event log found at standard platform locations")
+            }
+            Err(e) => return ApiResponse::err(format!("Failed to load event log: {e}")),
+        };
+
+        let parsed = match event_log::parse_event_log(&log_bytes) {
+            Ok(p) => p,
+            Err(e) => return ApiResponse::err(format!("Failed to parse event log: {e}")),
+        };
+
+        // 2. Replay PCR values from event log
+        let replayed = event_log::replay_pcrs(&parsed.events, PcrAlgorithm::Sha256);
+
+        // 3. Read live PCR values from TPM
+        let tpm = match Tpm::open() {
+            Ok(t) => t,
+            Err(e) => return ApiResponse::err(format!("Failed to open TPM: {e}")),
+        };
+
+        let pcr_indices: Vec<u32> = replayed.keys().copied().collect();
+        let live_pcrs = match tpm.read_pcrs_for_alg(PcrAlgorithm::Sha256, &pcr_indices) {
+            Ok(v) => v,
+            Err(e) => return ApiResponse::err(format!("Failed to read TPM PCR values: {e}")),
+        };
+
+        // 4. Compare
+        let mut comparisons = Vec::new();
+        let mut all_match = true;
+
+        // Collect all PCR indices from both sets
+        let mut all_indices: Vec<u32> = replayed
+            .keys()
+            .chain(live_pcrs.iter().map(|(i, _)| i))
+            .copied()
+            .collect::<std::collections::BTreeSet<u32>>()
+            .into_iter()
+            .collect();
+        all_indices.sort();
+
+        for idx in &all_indices {
+            let replayed_hex = replayed.get(idx).map(hex::encode);
+            let live_hex = live_pcrs
+                .iter()
+                .find(|(i, _)| i == idx)
+                .map(|(_, d)| hex::encode(d));
+
+            let matches = match (&replayed_hex, &live_hex) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            };
+
+            if !matches {
+                all_match = false;
+            }
+
+            comparisons.push(serde_json::json!({
+                "pcr": format!("PCR[{idx}]"),
+                "replayed": replayed_hex.unwrap_or_else(|| "(not in event log)".into()),
+                "tpm": live_hex.unwrap_or_else(|| "(not read)".into()),
+                "match": matches,
+            }));
+        }
+
+        ApiResponse::ok(serde_json::json!({
+            "algorithm": "SHA-256",
+            "all_match": all_match,
+            "pcr_count": comparisons.len(),
+            "comparisons": comparisons,
+        }))
+    })
+    .await
+    .unwrap_or_else(|e| ApiResponse::err(format!("Task failed: {e}")))
+}
+
+// ---------------------------------------------------------------------------
 // API: TD Quote
 // ---------------------------------------------------------------------------
 
@@ -701,6 +831,11 @@ async fn api_td_quote() -> Json<ApiResponse> {
 // API: Isolation Evidence
 // ---------------------------------------------------------------------------
 
+/// Platform isolation evidence: VCEK certificate chain (SNP only).
+///
+/// On TDX platforms, the TD Quote is available via the dedicated `/api/td-quote`
+/// endpoint, so this endpoint returns a descriptive message instead of
+/// duplicating that data.
 async fn api_isolation_evidence() -> Json<ApiResponse> {
     tokio::task::spawn_blocking(|| {
         let tpm = match Tpm::open() {
@@ -737,19 +872,9 @@ async fn api_isolation_evidence() -> Json<ApiResponse> {
                 }
             }
             CvmReportType::TdxVmReport => {
-                let imds = azure_guest_attestation_sdk::guest_attest::ImdsClient::new();
-                match imds.get_td_quote(&parsed.tee_report) {
-                    Ok(bytes) => ApiResponse::ok(serde_json::json!({
-                        "type": "TDX TD Quote",
-                        "hex": hex::encode(&bytes),
-                        "base64": base64::Engine::encode(
-                            &base64::engine::general_purpose::STANDARD,
-                            &bytes,
-                        ),
-                        "size_bytes": bytes.len(),
-                    })),
-                    Err(e) => ApiResponse::err(format!("Failed to fetch TD quote: {e}")),
-                }
+                ApiResponse::ok(serde_json::json!({
+                    "message": "TDX isolation evidence (TD Quote) is available via the dedicated TD Quote panel."
+                }))
             }
             _ => ApiResponse::ok(serde_json::json!({
                 "message": format!("No isolation evidence for report type {:?}", rtype)
@@ -1463,6 +1588,8 @@ async fn main() {
         .route("/api/ak-pub", get(api_ak_pub))
         .route("/api/pcrs", get(api_pcrs))
         .route("/api/event-log", get(api_event_log))
+        .route("/api/event-log/raw", get(api_event_log_raw))
+        .route("/api/verify-pcrs", get(api_verify_pcrs))
         .route("/api/td-quote", get(api_td_quote))
         .route("/api/isolation-evidence", get(api_isolation_evidence))
         .route("/api/guest-attest", post(api_guest_attest))

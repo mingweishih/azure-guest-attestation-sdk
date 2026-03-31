@@ -88,7 +88,7 @@ pub fn td_quote(bytes: &[u8]) -> crate::error::Result<ParsedTdQuote<'_>> {
 
 /// Pretty-print a parsed TDX quote to a human-readable string.
 pub fn td_quote_pretty(quote: &ParsedTdQuote) -> String {
-    format!("{quote:#?}")
+    crate::tee_report::td_quote::pretty_td_quote(quote)
 }
 
 /// Parse raw bytes into a VBS (Virtualization-Based Security) report.

@@ -145,12 +145,17 @@ function renderObject(obj, depth = 0) {
         html += '<tr>';
         html += `<td>${escapeHtml(key)}</td>`;
 
-        if (typeof value === 'object' && value !== null) {
+        // Check for special renderable fields BEFORE the type check, so
+        // string-valued fields like "pretty" / "tee_report_pretty" are
+        // handled regardless of whether the backend sends them as objects
+        // or strings.
+        if (key === 'tee_report_pretty' || key === 'pretty') {
+            const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+            html += `<td><div class="pretty-block"><pre>${escapeHtml(text)}</pre></div></td>`;
+        } else if (typeof value === 'object' && value !== null) {
             // Check for special renderable fields
             if (key === 'payload') {
                 html += `<td><div class="pretty-block"><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></div></td>`;
-            } else if (key === 'tee_report_pretty' || key === 'pretty') {
-                html += `<td><div class="pretty-block"><pre>${escapeHtml(String(value))}</pre></div></td>`;
             } else if (key === 'raw_report_hex') {
                 const hexStr = String(value);
                 html += '<td>';
@@ -254,13 +259,9 @@ function renderEvents(events) {
     html += '<div class="collapsible-body">';
     html += '<table class="kv-table">';
     html += '<tr><td><strong>PCR</strong></td><td><strong>Type</strong></td></tr>';
-    const displayEvents = events.length > 50 ? events.slice(0, 50) : events;
-    for (const evt of displayEvents) {
+    for (const evt of events) {
         const typeName = evt.event_type_name || evt.event_type;
         html += `<tr><td>PCR[${evt.pcr_index}]</td><td>${escapeHtml(typeName)} (${escapeHtml(evt.event_type)})</td></tr>`;
-    }
-    if (events.length > 50) {
-        html += `<tr><td colspan="2" style="color: var(--text-muted)">... ${events.length - 50} more events</td></tr>`;
     }
     html += '</table>';
     html += '</div></div>';
@@ -389,6 +390,62 @@ async function runEventLog() {
     try {
         const data = await apiGet('/api/event-log');
         showResult('result-event-log', data);
+    } catch (e) {
+        showError('result-event-log', e.message);
+    }
+}
+
+async function runVerifyPcrs() {
+    showLoading('result-event-log');
+    try {
+        const data = await apiGet('/api/verify-pcrs');
+        if (data.success && data.data && Array.isArray(data.data.comparisons)) {
+            const now = new Date().toLocaleTimeString();
+            const el = document.getElementById('result-event-log');
+            const allMatch = data.data.all_match;
+            const statusClass = allMatch ? 'success' : 'error';
+            const statusText = allMatch ? 'All PCRs Match' : 'Mismatch Detected';
+            let html = '<div class="result-card"><div class="result-header">';
+            html += `<div class="result-status ${statusClass}"><span class="status-dot ${statusClass}"></span> ${statusText}</div>`;
+            html += '<span class="result-time">' + now + '</span></div>';
+            html += '<div class="result-body">';
+            html += `<p><strong>Algorithm:</strong> ${escapeHtml(data.data.algorithm)} &nbsp; <strong>PCRs checked:</strong> ${data.data.pcr_count}</p>`;
+            html += '<table class="kv-table"><tr><td><strong>PCR</strong></td><td><strong>Replayed (Event Log)</strong></td><td><strong>TPM (Live)</strong></td><td><strong>Status</strong></td></tr>';
+            for (const c of data.data.comparisons) {
+                const icon = c.match ? '✅' : '❌';
+                const rowStyle = c.match ? '' : ' style="background: rgba(255,80,80,0.08)"';
+                html += `<tr${rowStyle}><td>${escapeHtml(c.pcr)}</td>`;
+                html += `<td style="font-size:0.75rem">${escapeHtml(c.replayed)}</td>`;
+                html += `<td style="font-size:0.75rem">${escapeHtml(c.tpm)}</td>`;
+                html += `<td>${icon}</td></tr>`;
+            }
+            html += '</table></div></div>';
+            el.innerHTML = html;
+        } else {
+            showResult('result-event-log', data);
+        }
+    } catch (e) {
+        showError('result-event-log', e.message);
+    }
+}
+
+async function downloadEventLog() {
+    try {
+        const response = await fetch('/api/event-log/raw');
+        if (!response.ok) {
+            const text = await response.text();
+            showError('result-event-log', text || 'Failed to download event log');
+            return;
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'binary_bios_measurements';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     } catch (e) {
         showError('result-event-log', e.message);
     }
