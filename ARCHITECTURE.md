@@ -16,7 +16,7 @@ The SDK is organized as a Cargo workspace with three members:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Application / CLI                                      │
+│  Application / CLI / Web UI                             │
 ├─────────────────────────────────────────────────────────┤
 │  AttestationClient                                      │
 │    .attest_guest()  .attest_platform()  .decrypt_token() │
@@ -27,17 +27,19 @@ The SDK is organized as a Cargo workspace with three members:
 │    snp_report  tdx_report  td_quote  attestation_token  │
 ├─────────────────────────────────────────────────────────┤
 │  guest_attest  ·  report  ·  tee_report  ·  tpm         │
+│  endorsement (ThimClient)  ·  cose (COSE_Sign1 parser) │
 │  (provider abstractions, submission helpers, types)     │
 ├─────────────────────────────────────────────────────────┤
 │  TPM 2.0 device (vTPM / hardware TPM)                   │
+│  Azure THIM / IMDS (network)                            │
 └─────────────────────────────────────────────────────────┘
 ```
 
 | Level | Entry point | Description |
 |-------|------------|-------------|
 | **High** | `AttestationClient::attest_guest` | One-shot: collect evidence → build report → submit → token |
-| **Mid** | `get_cvm_evidence`, `get_device_evidence`, `create_attestation_report` | Collect and assemble artifacts separately |
-| **Low** | `tpm`, `tee_report`, `report` | Direct TPM commands, TEE report parsing |
+| **Mid** | `get_cvm_evidence`, `get_device_evidence`, `get_endorsement`, `create_attestation_report` | Collect and assemble artifacts separately |
+| **Low** | `tpm`, `tee_report`, `report`, `endorsement`, `cose` | Direct TPM commands, TEE report parsing, THIM client, COSE parser |
 | **Parse** | `parse` module | Stateless parsing of reports, quotes, and tokens |
 
 ### Attestation Flow (decomposed)
@@ -70,6 +72,8 @@ these steps, each of which can also be called independently:
 crates/azure-guest-attestation-sdk/src/
 ├── lib.rs            # Crate root — module declarations, re-exports, tracing init
 ├── client.rs         # AttestationClient, Provider, options & result types
+├── cose.rs           # Minimal COSE_Sign1 parser (RFC 9052) — no external CBOR crate
+├── endorsement.rs    # ThimClient — TDX endorsement retrieval from Azure THIM
 ├── parse.rs          # Stateless parsing functions (no TPM / network)
 ├── guest_attest/
 │   ├── mod.rs        # Attestation types, payload builders, TCG log collection

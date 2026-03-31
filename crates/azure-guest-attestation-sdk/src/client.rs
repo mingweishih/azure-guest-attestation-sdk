@@ -173,7 +173,7 @@ pub struct Endorsement {
     /// Raw endorsement data (e.g. PEM certificate chain for VCEK,
     /// or COSE/CoRIM binary for TDX).
     pub data: Vec<u8>,
-    /// For TDX endorsements, the full [`EndorsementResponse`] from THIM
+    /// For TDX endorsements, the full [`EndorsementResponse`](crate::endorsement::EndorsementResponse) from THIM
     /// (includes MRTD, content-type, and helpers like
     /// [`payload_json()`](crate::endorsement::EndorsementResponse::payload_json)).
     pub endorsement_response: Option<crate::endorsement::EndorsementResponse>,

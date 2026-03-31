@@ -70,6 +70,8 @@ impl EndorsementResponse {
             .map_err(|e| io::Error::other(format!("payload is not valid JSON: {e}")))
     }
 }
+
+/// Blocking HTTP client for the Azure THIM endorsement service.
 ///
 /// Create with [`ThimClient::new`] (uses [`DEFAULT_REGION`]) or
 /// [`ThimClient::with_base_url`] for a custom endpoint.
