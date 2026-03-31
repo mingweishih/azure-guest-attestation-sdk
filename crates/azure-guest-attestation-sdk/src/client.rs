@@ -414,11 +414,7 @@ impl AttestationClient {
                     Some(r) => crate::endorsement::ThimClient::new(r),
                     None => crate::endorsement::ThimClient::default(),
                 };
-                let resp = thim_client
-                    .get_endorsement_for_report(&report.tee_report)
-                    .map_err(|e| {
-                        SdkError::Other(format!("failed to fetch TDX endorsement from THIM: {e}"))
-                    })?;
+                let resp = thim_client.get_endorsement_for_report(&report.tee_report)?;
                 Ok(Endorsement {
                     kind,
                     data: resp.data.clone(),
@@ -710,7 +706,7 @@ fn build_isolation_info(
                 }),
             })
         }
-        rtype => Err(SdkError::Other(format!(
+        rtype => Err(SdkError::Parse(format!(
             "Unsupported report type for attestation: {rtype:?}"
         ))),
     }
@@ -1097,5 +1093,109 @@ mod tests {
         assert_eq!(ev2.report_type, report::CvmReportType::TdxVmReport);
         assert_eq!(ev2.tee_report, vec![1, 2]);
         assert_eq!(ev2.platform_quote, vec![5]);
+    }
+
+    // -----------------------------------------------------------------------
+    // AttestationClient method tests (vtpm-tests gated)
+    // -----------------------------------------------------------------------
+
+    #[cfg(feature = "vtpm-tests")]
+    #[test]
+    fn get_cvm_evidence_rejects_user_data_over_64() {
+        use crate::tpm::device::Tpm;
+
+        let tpm = match Tpm::open_reference_for_tests() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let client = AttestationClient::from_tpm(tpm);
+        let opts = CvmEvidenceOptions {
+            user_data: Some(vec![0xAA; 65]),
+            fetch_platform_quote: false,
+        };
+        let err = client
+            .get_cvm_evidence(Some(&opts))
+            .expect_err("should reject user_data > 64");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeds 64 bytes"),
+            "expected user_data error, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "vtpm-tests")]
+    #[test]
+    fn get_cvm_evidence_accepts_user_data_exactly_64() {
+        use crate::tpm::device::Tpm;
+
+        let tpm = match Tpm::open_reference_for_tests() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let client = AttestationClient::from_tpm(tpm);
+        let opts = CvmEvidenceOptions {
+            user_data: Some(vec![0xBB; 64]),
+            fetch_platform_quote: false,
+        };
+        // This will fail at the TPM read (no CVM report index on reference TPM)
+        // but should NOT fail at the user_data validation
+        let err = client.get_cvm_evidence(Some(&opts));
+        if let Err(e) = err {
+            // Should be a TPM/IO error, not a Parse error about user_data
+            assert!(
+                !e.to_string().contains("exceeds 64 bytes"),
+                "user_data=64 should not be rejected: {e}"
+            );
+        }
+    }
+
+    #[cfg(feature = "vtpm-tests")]
+    #[test]
+    fn get_cvm_evidence_accepts_none_user_data() {
+        use crate::tpm::device::Tpm;
+
+        let tpm = match Tpm::open_reference_for_tests() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let client = AttestationClient::from_tpm(tpm);
+        // None user_data should not fail validation
+        let err = client.get_cvm_evidence(None);
+        if let Err(e) = err {
+            assert!(
+                !e.to_string().contains("exceeds 64 bytes"),
+                "None user_data should not be rejected: {e}"
+            );
+        }
+    }
+
+    #[cfg(feature = "vtpm-tests")]
+    #[test]
+    fn from_tpm_and_tpm_accessor() {
+        use crate::tpm::device::Tpm;
+
+        let tpm = match Tpm::open_reference_for_tests() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let client = AttestationClient::from_tpm(tpm);
+        // Verify the tpm() accessor returns a reference
+        let _tpm_ref = client.tpm();
+    }
+
+    #[cfg(feature = "vtpm-tests")]
+    #[test]
+    fn get_device_evidence_default_options() {
+        use crate::tpm::device::Tpm;
+
+        let tpm = match Tpm::open_reference_for_tests() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let client = AttestationClient::from_tpm(tpm);
+        // Default options uses OS-detected PCR list.
+        // On reference TPM this may error at OsInfo::detect (no /etc/os-release etc.)
+        // but it exercises the dispatch path.
+        let _result = client.get_device_evidence(None);
     }
 }

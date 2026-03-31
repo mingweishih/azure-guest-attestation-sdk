@@ -174,13 +174,21 @@ pub fn get_ak_cert(tpm: &Tpm) -> io::Result<Vec<u8>> {
 /// If the NV index stores exactly the cert size this will match `get_ak_cert`.
 pub fn get_ak_cert_trimmed(tpm: &Tpm) -> io::Result<Vec<u8>> {
     let full = get_ak_cert(tpm)?;
+    Ok(trim_der_certificate(full))
+}
 
+/// Trim trailing zero padding from a DER-encoded certificate.
+///
+/// Parses the outer SEQUENCE (0x30) tag and length to determine the actual
+/// certificate size, then truncates any trailing padding. Returns the input
+/// unchanged if it does not start with a valid SEQUENCE tag.
+fn trim_der_certificate(full: Vec<u8>) -> Vec<u8> {
     if full.len() < 4 {
-        return Ok(full);
+        return full;
     }
     // Basic DER parser for Certificate ::= SEQUENCE (0x30)
     if full[0] != 0x30 {
-        return Ok(full);
+        return full;
     }
 
     // Handle short vs long form length octets
@@ -190,7 +198,7 @@ pub fn get_ak_cert_trimmed(tpm: &Tpm) -> io::Result<Vec<u8>> {
     } else {
         let n = len_byte & 0x7F; // number of subsequent length bytes
         if n == 0 || n > 4 || 2 + n > full.len() {
-            return Ok(full);
+            return full;
         }
         let mut l: usize = 0;
         for i in 0..n {
@@ -201,9 +209,9 @@ pub fn get_ak_cert_trimmed(tpm: &Tpm) -> io::Result<Vec<u8>> {
 
     let total = header_len + content_len;
     if total <= full.len() {
-        Ok(full[..total].to_vec())
+        full[..total].to_vec()
     } else {
-        Ok(full)
+        full
     }
 }
 
@@ -824,5 +832,123 @@ mod tests {
                 "policy decrypt output mismatch"
             );
         }
+    }
+
+    // ── trim_der_certificate pure-logic tests ──────────────────────────
+
+    use super::trim_der_certificate;
+
+    #[test]
+    fn trim_der_empty_input() {
+        assert_eq!(trim_der_certificate(vec![]), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn trim_der_short_input_under_4_bytes() {
+        // Inputs shorter than 4 bytes are returned as-is
+        assert_eq!(trim_der_certificate(vec![0x30]), vec![0x30]);
+        assert_eq!(trim_der_certificate(vec![0x30, 0x03]), vec![0x30, 0x03]);
+        assert_eq!(
+            trim_der_certificate(vec![0x30, 0x03, 0xAA]),
+            vec![0x30, 0x03, 0xAA]
+        );
+    }
+
+    #[test]
+    fn trim_der_non_sequence_tag() {
+        // If first byte is not 0x30 (SEQUENCE), return as-is
+        let input = vec![0x04, 0x02, 0xAA, 0xBB, 0x00, 0x00];
+        assert_eq!(trim_der_certificate(input.clone()), input);
+    }
+
+    #[test]
+    fn trim_der_short_form_no_padding() {
+        // 0x30 0x04 <4 content bytes> — exact fit, no trimming needed
+        let input = vec![0x30, 0x04, 0x01, 0x02, 0x03, 0x04];
+        assert_eq!(trim_der_certificate(input.clone()), input);
+    }
+
+    #[test]
+    fn trim_der_short_form_with_trailing_zeros() {
+        // 0x30 0x04 <4 content bytes> <trailing zeros>
+        let mut input = vec![0x30, 0x04, 0x01, 0x02, 0x03, 0x04];
+        let expected = input.clone();
+        input.extend_from_slice(&[0x00; 10]); // trailing padding
+        assert_eq!(trim_der_certificate(input), expected);
+    }
+
+    #[test]
+    fn trim_der_short_form_content_length_exceeds_buffer() {
+        // length says 120 but buffer only has 6 bytes total → return as-is
+        let input = vec![0x30, 120, 0x01, 0x02, 0x03, 0x04];
+        assert_eq!(trim_der_certificate(input.clone()), input);
+    }
+
+    #[test]
+    fn trim_der_long_form_1_length_byte() {
+        // 0x30 0x81 0x05 <5 content bytes>  (long form with n=1)
+        let mut input = vec![0x30, 0x81, 0x05];
+        input.extend_from_slice(&[0xAA; 5]);
+        let expected = input.clone();
+        input.extend_from_slice(&[0x00; 20]); // trailing padding
+        assert_eq!(trim_der_certificate(input), expected);
+    }
+
+    #[test]
+    fn trim_der_long_form_2_length_bytes() {
+        // 0x30 0x82 0x01 0x00 <256 content bytes> (long form with n=2, length=256)
+        let mut input = vec![0x30, 0x82, 0x01, 0x00];
+        input.extend_from_slice(&[0xBB; 256]);
+        let expected = input.clone();
+        input.extend_from_slice(&[0x00; 50]); // trailing padding
+        assert_eq!(trim_der_certificate(input), expected);
+    }
+
+    #[test]
+    fn trim_der_long_form_3_length_bytes() {
+        // 0x30 0x83 0x00 0x00 0x03 <3 content bytes> (n=3, length=3)
+        let mut input = vec![0x30, 0x83, 0x00, 0x00, 0x03];
+        input.extend_from_slice(&[0xCC; 3]);
+        let expected = input.clone();
+        input.extend_from_slice(&[0x00; 5]); // trailing padding
+        assert_eq!(trim_der_certificate(input), expected);
+    }
+
+    #[test]
+    fn trim_der_long_form_4_length_bytes() {
+        // 0x30 0x84 0x00 0x00 0x00 0x02 <2 content bytes> (n=4, length=2)
+        let mut input = vec![0x30, 0x84, 0x00, 0x00, 0x00, 0x02];
+        input.extend_from_slice(&[0xDD; 2]);
+        let expected = input.clone();
+        input.extend_from_slice(&[0x00; 8]); // trailing padding
+        assert_eq!(trim_der_certificate(input), expected);
+    }
+
+    #[test]
+    fn trim_der_long_form_n_zero_bail() {
+        // 0x80 means "long form with 0 subsequent length bytes" — invalid, bail
+        let input = vec![0x30, 0x80, 0x01, 0x02, 0x03, 0x04];
+        assert_eq!(trim_der_certificate(input.clone()), input);
+    }
+
+    #[test]
+    fn trim_der_long_form_n_exceeds_4_bail() {
+        // 0x85 means n=5 — we only support up to 4, bail
+        let input = vec![0x30, 0x85, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02];
+        assert_eq!(trim_der_certificate(input.clone()), input);
+    }
+
+    #[test]
+    fn trim_der_long_form_n_exceeds_buffer_bail() {
+        // 0x82 means n=2 but buffer only has 3 bytes (need index 2+2=4) → bail
+        let input = vec![0x30, 0x82, 0x01];
+        assert_eq!(trim_der_certificate(input.clone()), input);
+    }
+
+    #[test]
+    fn trim_der_long_form_content_exceeds_buffer() {
+        // n=1, length=200 but buffer only has 10 bytes total → return as-is
+        let input = vec![0x30, 0x81, 200, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        assert_eq!(trim_der_certificate(input.clone()), input);
     }
 }

@@ -4224,4 +4224,92 @@ mod tests {
         let parsed = Tpm2bBytes::unmarshal(&buf, &mut cur).expect("unmarshal empty bytes");
         assert!(parsed.0.is_empty());
     }
+
+    // ==================== PcrSelectionList Tests ====================
+
+    #[test]
+    fn pcr_selection_from_empty_pcrs() {
+        let sel = PcrSelectionList::from_pcrs(&[]);
+        assert!(sel.0.is_empty(), "empty PCR list → empty selection");
+    }
+
+    #[test]
+    fn pcr_selection_single_pcr_0() {
+        let sel = PcrSelectionList::from_pcrs(&[0]);
+        assert_eq!(sel.0.len(), 1);
+        let s = &sel.0[0];
+        assert_eq!(s.hash_alg, ALG_SHA256);
+        assert_eq!(s.size_of_select, 3);
+        // PCR 0 → byte 0, bit 0
+        assert_eq!(s.select, [0x01, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn pcr_selection_single_pcr_7() {
+        let sel = PcrSelectionList::from_pcrs(&[7]);
+        let s = &sel.0[0];
+        // PCR 7 → byte 0, bit 7
+        assert_eq!(s.select, [0x80, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn pcr_selection_single_pcr_8() {
+        let sel = PcrSelectionList::from_pcrs(&[8]);
+        let s = &sel.0[0];
+        // PCR 8 → byte 1, bit 0
+        assert_eq!(s.select, [0x00, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn pcr_selection_single_pcr_23() {
+        let sel = PcrSelectionList::from_pcrs(&[23]);
+        let s = &sel.0[0];
+        // PCR 23 → byte 2, bit 7
+        assert_eq!(s.select, [0x00, 0x00, 0x80]);
+    }
+
+    #[test]
+    fn pcr_selection_multiple_pcrs() {
+        let sel = PcrSelectionList::from_pcrs(&[0, 1, 2, 7]);
+        let s = &sel.0[0];
+        // PCR 0 = bit0, 1 = bit1, 2 = bit2, 7 = bit7
+        assert_eq!(s.select[0], 0x01 | 0x02 | 0x04 | 0x80);
+        assert_eq!(s.select[1], 0x00);
+        assert_eq!(s.select[2], 0x00);
+    }
+
+    #[test]
+    fn pcr_selection_all_24_pcrs() {
+        let pcrs: Vec<u32> = (0..24).collect();
+        let sel = PcrSelectionList::from_pcrs(&pcrs);
+        let s = &sel.0[0];
+        assert_eq!(s.select, [0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn pcr_selection_out_of_range_ignored() {
+        // PCR indices > 23 should be silently ignored
+        let sel = PcrSelectionList::from_pcrs(&[0, 24, 100]);
+        let s = &sel.0[0];
+        assert_eq!(s.select, [0x01, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn pcr_selection_duplicate_pcrs() {
+        // Duplicates should not cause issues (OR is idempotent)
+        let sel = PcrSelectionList::from_pcrs(&[3, 3, 3]);
+        let s = &sel.0[0];
+        assert_eq!(s.select, [0x08, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn pcr_selection_marshal_roundtrip() {
+        let sel = PcrSelectionList::from_pcrs(&[0, 7, 16, 23]);
+        let mut buf = Vec::new();
+        sel.marshal(&mut buf);
+        let mut cur = 0usize;
+        let parsed = PcrSelectionList::unmarshal(&buf, &mut cur).expect("unmarshal");
+        assert_eq!(parsed.0.len(), 1);
+        assert_eq!(parsed.0[0].select, sel.0[0].select);
+    }
 }
