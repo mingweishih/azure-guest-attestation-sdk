@@ -1,0 +1,158 @@
+name: Release CLI
+
+# Auto-bumps the `azure-guest-attest` CLI version, tags it
+# (`azure-guest-attest-v<version>`), then builds a static musl Linux binary and
+# a Windows binary and publishes them (with SHA256 checksums) to a GitHub
+# Release.
+#
+# This is a single workflow on purpose: a tag pushed with the default
+# GITHUB_TOKEN does NOT trigger a separate tag-triggered workflow, so the
+# bump/tag and the build/publish live in one run gated by `needs`.
+#
+# Trigger manually from the Actions tab and pick the semver bump level.
+# Crate publishing (crates.io) is handled by a separate crates-release
+# workflow, not here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: 'Semver bump level for the azure-guest-attest CLI'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-cli
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: azure-guest-attest
+  CRATE: azure-guest-attest
+  MANIFEST: tools/azure-guest-attest/Cargo.toml
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Gate on CLI checks, bump the version, commit + tag on the current branch.
+  # --------------------------------------------------------------------------
+  prepare:
+    name: Bump version + tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # A PAT/app token (RELEASE_TOKEN) is preferred so the push works with
+          # branch protection; falls back to GITHUB_TOKEN for unprotected repos.
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install cargo-edit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-edit
+
+      # Gate: do not release a broken CLI.
+      - name: Clippy (CLI)
+        run: cargo clippy -p ${{ env.CRATE }} --all-targets -- -D warnings
+      - name: Test (CLI)
+        run: cargo test -p ${{ env.CRATE }}
+
+      - name: Bump version
+        id: bump
+        run: |
+          set -euo pipefail
+          cargo set-version --bump "${{ inputs.level }}" -p "$CRATE"
+          # Refresh Cargo.lock to match the new manifest version.
+          cargo check -p "$CRATE" --quiet
+          version=$(grep -m1 '^version' "$MANIFEST" | sed -E 's/.*"(.*)".*/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$CRATE-v$version" >> "$GITHUB_OUTPUT"
+          echo "Bumped $CRATE to $version"
+
+      - name: Commit + tag
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$MANIFEST" Cargo.lock
+          git commit -m "release: ${CRATE} v${{ steps.bump.outputs.version }}"
+          git tag "${{ steps.bump.outputs.tag }}"
+          git push origin "HEAD:${{ github.ref_name }}" --follow-tags
+
+  # --------------------------------------------------------------------------
+  # Build the binaries at the freshly-created tag and publish the Release.
+  # --------------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.target }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Fully static Linux binary — portable across glibc/Ubuntu versions.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            ext: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: '.exe'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl build tools (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: cargo build --release -p ${{ env.BIN_NAME }} --target ${{ matrix.target }}
+
+      - name: Stage artifact + checksum (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          mkdir -p dist
+          asset="${BIN_NAME}-${{ matrix.target }}${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/${BIN_NAME}${{ matrix.ext }}" "dist/${asset}"
+          ( cd dist && sha256sum "${asset}" > "${asset}.sha256" )
+
+      - name: Stage artifact + checksum (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $asset = "$env:BIN_NAME-${{ matrix.target }}${{ matrix.ext }}"
+          Copy-Item "target/${{ matrix.target }}/release/$env:BIN_NAME${{ matrix.ext }}" "dist/$asset"
+          (Get-FileHash "dist/$asset" -Algorithm SHA256).Hash.ToLower() + "  $asset" |
+            Out-File -Encoding ascii "dist/$asset.sha256"
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: azure-guest-attest ${{ needs.prepare.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/*
+          fail_on_unmatched_files: true
