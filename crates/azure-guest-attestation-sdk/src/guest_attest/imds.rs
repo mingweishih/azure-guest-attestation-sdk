@@ -43,6 +43,34 @@ impl ImdsClient {
         Ok(v)
     }
 
+    /// Fetch the current VM's Azure region (e.g. `"eastus"`) from IMDS.
+    ///
+    /// Queries `instance/compute/location` in text form. The returned string
+    /// is the region name as reported by the platform; callers typically pass
+    /// it to [`maa_base_url_for_region`](crate::endpoint::maa_base_url_for_region).
+    pub fn get_region(&self) -> io::Result<String> {
+        const LOCATION_ENDPOINT: &str = "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-01-01&format=text";
+        let resp = self
+            .http
+            .get(LOCATION_ENDPOINT)
+            .header("Metadata", "true")
+            .send()
+            .map_err(|e| io::Error::other(format!("http error: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(io::Error::other(format!("status {status}")));
+        }
+        let region = resp
+            .text()
+            .map_err(|e| io::Error::other(format!("read body: {e}")))?
+            .trim()
+            .to_string();
+        if region.is_empty() {
+            return Err(io::Error::other("IMDS returned empty region"));
+        }
+        Ok(region)
+    }
+
     /// Fetch the AMD SEV-SNP VCEK certificate chain from Azure THIM / IMDS.
     pub fn get_vcek_chain(&self) -> io::Result<Vec<u8>> {
         const THIM_ENDPOINT: &str = "http://169.254.169.254/metadata/THIM/amd/certification";

@@ -171,12 +171,10 @@ enum Commands {
         /// Provider: loopback | maa
         #[arg(long, default_value = "loopback")]
         provider: String,
-        /// MAA endpoint (used when --provider=maa)
-        #[arg(
-            long,
-            default_value = "https://sharedweu.weu.attest.azure.net/attest/AzureGuest?api-version=2020-10-01"
-        )]
-        endpoint: String,
+        /// MAA endpoint (used when --provider=maa). When omitted, the endpoint
+        /// is auto-selected from the VM's region via IMDS.
+        #[arg(long)]
+        endpoint: Option<String>,
         /// Optional JSON object of key-value pairs to embed (values base64 encoded) in ClientPayload
         #[arg(long, value_name = "JSON", default_value = "{}")]
         client_payload: String,
@@ -192,12 +190,12 @@ enum Commands {
     },
     /// Perform TEE-only attestation (no TPM/PCR evidence) against MAA platform endpoint
     TeeAttest {
-        /// MAA platform endpoint (e.g. `https://<region>.attest.azure.net/attest/TdxVm?api-version=2023-04-01-preview` or SevSnpVm)
-        #[arg(
-            long,
-            default_value = "https://sharedweu.weu.attest.azure.net/attest/TdxVm?api-version=2023-04-01-preview"
-        )]
-        endpoint: String,
+        /// MAA platform endpoint (e.g. `https://<region>.attest.azure.net`).
+        /// When omitted, the base endpoint is auto-selected from the VM's
+        /// region via IMDS (the correct /attest/… path is appended based on
+        /// the detected TEE type).
+        #[arg(long)]
+        endpoint: Option<String>,
         /// Decode JWT (header & payload JSON pretty) if token-like
         #[arg(long)]
         decode: bool,
@@ -1075,7 +1073,22 @@ fn main() -> anyhow::Result<()> {
             // Build provider enum
             let prov = match provider.as_str() {
                 "loopback" => azure_guest_attestation_sdk::client::Provider::Loopback,
-                "maa" => azure_guest_attestation_sdk::client::Provider::maa(endpoint.clone()),
+                "maa" => {
+                    let ep = match endpoint {
+                        Some(e) => e.clone(),
+                        None => {
+                            let base = azure_guest_attestation_sdk::endpoint::detect_maa_base_url()
+                                .map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "Failed to auto-select MAA endpoint from IMDS region: {e}"
+                                    )
+                                })?;
+                            writeln!(writer, "Auto-selected MAA endpoint: {base}")?;
+                            base
+                        }
+                    };
+                    azure_guest_attestation_sdk::client::Provider::maa(ep)
+                }
                 other => return Err(anyhow::anyhow!("Unknown provider: {other}")),
             };
             let client = azure_guest_attestation_sdk::client::AttestationClient::from_tpm(tpm);
@@ -1130,6 +1143,19 @@ fn main() -> anyhow::Result<()> {
                 Some(CvmReportType::TdxVmReport)
             } else {
                 None
+            };
+            let endpoint = match endpoint {
+                Some(e) => e.clone(),
+                None => {
+                    let base = azure_guest_attestation_sdk::endpoint::detect_maa_base_url()
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "Failed to auto-select MAA endpoint from IMDS region: {e}"
+                            )
+                        })?;
+                    writeln!(writer, "Auto-selected MAA endpoint: {base}")?;
+                    base
+                }
             };
             let (token_or_body, payload) =
                 azure_guest_attestation_sdk::guest_attest::tee_only_attest_platform(
