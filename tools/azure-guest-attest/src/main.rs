@@ -1082,7 +1082,16 @@ fn main() -> anyhow::Result<()> {
             // Build provider enum, capturing the resolved MAA endpoint (if any).
             let mut endpoint_used: Option<String> = None;
             let prov = match provider.as_str() {
-                "loopback" => azure_guest_attestation_sdk::client::Provider::Loopback,
+                "loopback" => {
+                    // --endpoint only applies to MAA; fail fast rather than
+                    // silently ignoring it for other providers.
+                    if endpoint.is_some() {
+                        return Err(anyhow::anyhow!(
+                            "--endpoint is only valid with --provider=maa"
+                        ));
+                    }
+                    azure_guest_attestation_sdk::client::Provider::Loopback
+                }
                 "maa" => {
                     let ep = match endpoint {
                         Some(e) => e,
@@ -1529,7 +1538,10 @@ fn base64_url_decode_vec(s: &str) -> anyhow::Result<Vec<u8>> {
 /// token is not a recognizable JWT (e.g. the loopback provider's echo token).
 fn jwt_payload_value(token: &str) -> Option<serde_json::Value> {
     let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() >= 2 {
+    // A JWS/JWT has exactly three segments: header.payload.signature. Requiring
+    // all three avoids misclassifying arbitrary responses (e.g. a raw platform
+    // body that happens to contain a '.') as a token.
+    if parts.len() == 3 {
         if let Ok(raw) = base64_url_decode_vec(parts[1]) {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) {
                 return Some(v);
