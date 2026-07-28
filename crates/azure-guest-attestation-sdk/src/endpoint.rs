@@ -141,6 +141,9 @@ const COMMERCIAL_ENDPOINTS: &[(&str, &str)] = &[
 const USGOV_ENDPOINTS: &[(&str, &str)] = &[
     ("usgovvirginia", "https://sharedugv.ugv.attest.azure.us"),
     ("usgovarizona", "https://shareduga.uga.attest.azure.us"),
+    // USGov Texas intentionally shares the USGov Arizona MAA instance
+    // (`shareduga.uga...`), per Azure's attestation endpoint table — not a
+    // copy/paste error.
     ("usgovtexas", "https://shareduga.uga.attest.azure.us"),
 ];
 
@@ -153,6 +156,15 @@ fn normalize_region(region: &str) -> String {
         .collect()
 }
 
+/// Look up an already-normalized region key in the built-in tables.
+fn lookup_normalized(key: &str) -> Option<&'static str> {
+    COMMERCIAL_ENDPOINTS
+        .iter()
+        .chain(USGOV_ENDPOINTS.iter())
+        .find(|(k, _)| *k == key)
+        .map(|(_, url)| *url)
+}
+
 /// Resolve an Azure region name to the shared MAA base URL for that region.
 ///
 /// Returns `None` when the region is not present in the built-in tables.
@@ -162,12 +174,7 @@ fn normalize_region(region: &str) -> String {
 /// Use [`maa_base_url_for_region_or_default`] to fall back to a stable
 /// default endpoint instead of `None`.
 pub fn maa_base_url_for_region(region: &str) -> Option<&'static str> {
-    let key = normalize_region(region);
-    COMMERCIAL_ENDPOINTS
-        .iter()
-        .chain(USGOV_ENDPOINTS.iter())
-        .find(|(k, _)| *k == key)
-        .map(|(_, url)| *url)
+    lookup_normalized(&normalize_region(region))
 }
 
 /// Resolve an Azure region name to a shared MAA base URL, falling back to a
@@ -179,10 +186,12 @@ pub fn maa_base_url_for_region(region: &str) -> Option<&'static str> {
 /// fallback preserves functionality rather than failing on new/unlisted
 /// regions.
 pub fn maa_base_url_for_region_or_default(region: &str) -> String {
-    if let Some(url) = maa_base_url_for_region(region) {
+    // Normalize once, then do both the lookup and the fallback decision from
+    // the same key.
+    let key = normalize_region(region);
+    if let Some(url) = lookup_normalized(&key) {
         return url.to_string();
     }
-    let key = normalize_region(region);
     if key.starts_with("usgov") {
         DEFAULT_USGOV_BASE_URL.to_string()
     } else {
