@@ -46,6 +46,8 @@ pub mod client;
 pub mod cose;
 /// TDX endorsement retrieval from Azure THIM.
 pub mod endorsement;
+/// MAA regional endpoint selection (region → shared MAA base URL).
+pub mod endpoint;
 pub mod error;
 pub mod parse;
 

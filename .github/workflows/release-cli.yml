@@ -1,0 +1,164 @@
+name: Release CLI
+
+# Stage 2 of the CLI release: when a version-bump PR (from
+# `release-cli-prepare.yml`) merges to `main` and changes the CLI manifest,
+# tag `azure-guest-attest-v<version>` and publish the Linux (musl) + Windows
+# binaries with SHA256 checksums to a GitHub Release.
+#
+# Uses only the built-in GITHUB_TOKEN: it creates a *tag* and a *Release*
+# (allowed) and never pushes to the protected `main` branch, so no PAT, App,
+# or branch-protection bypass is required. Because the bump always lands via a
+# reviewed PR, the code has already passed the repo's required CI before this
+# runs. Re-runnable via workflow_dispatch (no-op if the tag already exists).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/azure-guest-attest/Cargo.toml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-cli
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: azure-guest-attest
+  CRATE: azure-guest-attest
+  MANIFEST: tools/azure-guest-attest/Cargo.toml
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Read the current CLI version; create the release tag if it doesn't exist.
+  # `release=false` (tag already present) short-circuits the build/publish.
+  # --------------------------------------------------------------------------
+  tag:
+    name: Create release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      release: ${{ steps.check.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine version and whether to release
+        id: check
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' "$MANIFEST" | sed -E 's/.*"(.*)".*/\1/')
+          tag="$CRATE-v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Will release $tag."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create + push tag
+        if: steps.check.outputs.release == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.check.outputs.tag }}"
+          git push origin "${{ steps.check.outputs.tag }}"
+
+  # --------------------------------------------------------------------------
+  # Build the binaries at the freshly-created tag.
+  # --------------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.target }})
+    needs: tag
+    if: needs.tag.outputs.release == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Fully static Linux binary — portable across glibc/Ubuntu versions.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            ext: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: '.exe'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl build tools (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: cargo build --release --locked -p ${{ env.CRATE }} --target ${{ matrix.target }}
+
+      - name: Stage artifact + checksum (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          mkdir -p dist
+          asset="${BIN_NAME}-${{ matrix.target }}${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/${BIN_NAME}${{ matrix.ext }}" "dist/${asset}"
+          ( cd dist && sha256sum "${asset}" > "${asset}.sha256" )
+
+      - name: Stage artifact + checksum (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $asset = "$env:BIN_NAME-${{ matrix.target }}${{ matrix.ext }}"
+          Copy-Item "target/${{ matrix.target }}/release/$env:BIN_NAME${{ matrix.ext }}" "dist/$asset"
+          (Get-FileHash "dist/$asset" -Algorithm SHA256).Hash.ToLower() + "  $asset" |
+            Out-File -Encoding ascii "dist/$asset.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
+  # Single publish job: collect all build artifacts and create the Release
+  # exactly once (publishing from each matrix job would race on Release
+  # creation/metadata).
+  # --------------------------------------------------------------------------
+  publish:
+    name: Publish GitHub Release
+    needs: [tag, build]
+    if: needs.tag.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: azure-guest-attest ${{ needs.tag.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/*
+          fail_on_unmatched_files: true

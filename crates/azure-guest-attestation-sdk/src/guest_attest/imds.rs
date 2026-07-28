@@ -10,6 +10,7 @@
 
 use reqwest::blocking::Client;
 use std::io;
+use std::time::Duration;
 
 /// Subset IMDS client for platform endorsements (SNP VCEK chain + TDX quote).
 ///
@@ -19,11 +20,33 @@ pub struct ImdsClient {
 }
 
 impl ImdsClient {
-    /// Create a new IMDS client with default HTTP settings.
+    /// Create a new IMDS client.
+    ///
+    /// A short connect timeout and an overall request timeout are configured
+    /// so IMDS calls fail fast when running off-Azure (the link-local metadata
+    /// address `169.254.169.254` is unreachable there). Without this, callers
+    /// such as [`get_region`](Self::get_region) — and the CLI's endpoint
+    /// auto-detection — could hang indefinitely instead of falling back.
+    ///
+    /// In the rare event the timed client fails to build, a warning is logged
+    /// and an untimed default client is used as a last resort.
     pub fn new() -> Self {
-        Self {
-            http: Client::new(),
-        }
+        // Connect timeout fails fast when the metadata IP is unroutable;
+        // the longer overall timeout accommodates TD Quote generation on Azure.
+        let http = Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    target: "guest_attest",
+                    error = %e,
+                    "failed to build IMDS HTTP client with timeouts; \
+                     falling back to an untimed default client (requests may hang)"
+                );
+                Client::new()
+            });
+        Self { http }
     }
 
     fn get_json(&self, url: &str) -> io::Result<serde_json::Value> {
@@ -41,6 +64,40 @@ impl ImdsClient {
             .json::<serde_json::Value>()
             .map_err(|e| io::Error::other(format!("json error: {e}")))?;
         Ok(v)
+    }
+
+    /// GET a URL with the IMDS `Metadata: true` header and return the response
+    /// body as text. Errors on transport failure or a non-2xx status.
+    ///
+    /// Kept separate from [`get_region`](Self::get_region) so the network path
+    /// can be mocked in unit tests (see the injectorpp tests in this module).
+    fn get_text(&self, url: &str) -> io::Result<String> {
+        let resp = self
+            .http
+            .get(url)
+            .header("Metadata", "true")
+            .send()
+            .map_err(|e| io::Error::other(format!("http error: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(io::Error::other(format!("status {status}")));
+        }
+        resp.text()
+            .map_err(|e| io::Error::other(format!("read body: {e}")))
+    }
+
+    /// Fetch the current VM's Azure region (e.g. `"eastus"`) from IMDS.
+    ///
+    /// Queries `instance/compute/location` in text form. The returned string
+    /// is the region name as reported by the platform; callers typically pass
+    /// it to [`maa_base_url_for_region`](crate::endpoint::maa_base_url_for_region).
+    pub fn get_region(&self) -> io::Result<String> {
+        const LOCATION_ENDPOINT: &str = "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-01-01&format=text";
+        let region = self.get_text(LOCATION_ENDPOINT)?.trim().to_string();
+        if region.is_empty() {
+            return Err(io::Error::other("IMDS returned empty region"));
+        }
+        Ok(region)
     }
 
     /// Fetch the AMD SEV-SNP VCEK certificate chain from Azure THIM / IMDS.
@@ -166,6 +223,17 @@ impl Default for ImdsClient {
 mod tests {
     use super::*;
     use injectorpp::interface::injector::*;
+    use std::sync::Mutex;
+
+    // injectorpp patches process-global memory, so tests that install mocks
+    // must not run concurrently under `cargo test`. Serialize them behind a
+    // shared mutex. `unwrap_or_else(into_inner)` recovers from poisoning so a
+    // single failing/panicking test does not cascade into the others.
+    static INJECT_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn inject_guard() -> std::sync::MutexGuard<'static, ()> {
+        INJECT_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn imds_client_new_creates_instance() {
@@ -200,6 +268,7 @@ mod tests {
 
     #[test]
     fn get_vcek_chain_happy_path() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
@@ -223,6 +292,7 @@ mod tests {
 
     #[test]
     fn get_vcek_chain_missing_fields_returns_empty() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
@@ -243,6 +313,7 @@ mod tests {
 
     #[test]
     fn get_vcek_chain_error_propagates() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
@@ -267,6 +338,7 @@ mod tests {
 
     #[test]
     fn get_vcek_chain_partial_fields() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
@@ -279,5 +351,70 @@ mod tests {
         let result = client.get_vcek_chain().unwrap();
         // certificateChain defaults to ""
         assert_eq!(result, b"only-vcek");
+    }
+
+    // ---- get_region: mock the private get_text helper ----------------------
+
+    fn fake_get_text_region(_self: &ImdsClient, _url: &str) -> io::Result<String> {
+        // Whitespace around the region should be trimmed.
+        Ok("  eastus\n".to_string())
+    }
+
+    #[test]
+    fn get_region_success_trims_body() {
+        let _guard = inject_guard();
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_text))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(fake_get_text_region));
+        }
+        let client = ImdsClient::new();
+        assert_eq!(client.get_region().unwrap(), "eastus");
+    }
+
+    fn fake_get_text_empty(_self: &ImdsClient, _url: &str) -> io::Result<String> {
+        Ok("   \n".to_string())
+    }
+
+    #[test]
+    fn get_region_empty_body_errors() {
+        let _guard = inject_guard();
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_text))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(fake_get_text_empty));
+        }
+        let client = ImdsClient::new();
+        let err = client.get_region().unwrap_err();
+        assert!(
+            err.to_string().contains("empty region"),
+            "expected empty-region error: {err}"
+        );
+    }
+
+    fn fake_get_text_status_error(_self: &ImdsClient, _url: &str) -> io::Result<String> {
+        // Simulates the non-2xx branch inside get_text.
+        Err(io::Error::other("status 404 Not Found"))
+    }
+
+    #[test]
+    fn get_region_non_success_status_propagates() {
+        let _guard = inject_guard();
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_text))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(
+                    fake_get_text_status_error
+                ));
+        }
+        let client = ImdsClient::new();
+        let err = client.get_region().unwrap_err();
+        assert!(
+            err.to_string().contains("status 404"),
+            "expected propagated status error: {err}"
+        );
     }
 }

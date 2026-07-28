@@ -171,12 +171,10 @@ enum Commands {
         /// Provider: loopback | maa
         #[arg(long, default_value = "loopback")]
         provider: String,
-        /// MAA endpoint (used when --provider=maa)
-        #[arg(
-            long,
-            default_value = "https://sharedweu.weu.attest.azure.net/attest/AzureGuest?api-version=2020-10-01"
-        )]
-        endpoint: String,
+        /// MAA endpoint (used when --provider=maa). When omitted, the endpoint
+        /// is auto-selected from the VM's region via IMDS.
+        #[arg(long)]
+        endpoint: Option<String>,
         /// Optional JSON object of key-value pairs to embed (values base64 encoded) in ClientPayload
         #[arg(long, value_name = "JSON", default_value = "{}")]
         client_payload: String,
@@ -189,15 +187,19 @@ enum Commands {
         /// PCR indices to include in the quote (comma-separated or repeated)
         #[arg(long = "pcr-index", value_name = "INDEX", value_delimiter = ',')]
         pcr_index: Vec<u32>,
+        /// Emit a machine-readable JSON result (pass/fail, endpoint, token,
+        /// claims). Exit code is non-zero when attestation fails.
+        #[arg(long)]
+        json: bool,
     },
     /// Perform TEE-only attestation (no TPM/PCR evidence) against MAA platform endpoint
     TeeAttest {
-        /// MAA platform endpoint (e.g. `https://<region>.attest.azure.net/attest/TdxVm?api-version=2023-04-01-preview` or SevSnpVm)
-        #[arg(
-            long,
-            default_value = "https://sharedweu.weu.attest.azure.net/attest/TdxVm?api-version=2023-04-01-preview"
-        )]
-        endpoint: String,
+        /// MAA platform endpoint (e.g. `https://<region>.attest.azure.net`).
+        /// When omitted, the base endpoint is auto-selected from the VM's
+        /// region via IMDS (the correct /attest/… path is appended based on
+        /// the detected TEE type).
+        #[arg(long)]
+        endpoint: Option<String>,
         /// Decode JWT (header & payload JSON pretty) if token-like
         #[arg(long)]
         decode: bool,
@@ -210,6 +212,10 @@ enum Commands {
         /// Show raw JSON request payload sent to MAA
         #[arg(long)]
         show_request: bool,
+        /// Emit a machine-readable JSON result (pass/fail, endpoint, token,
+        /// claims). Exit code is non-zero when attestation fails.
+        #[arg(long)]
+        json: bool,
     },
     /// Query TDX endorsement data from Azure THIM
     Endorsement {
@@ -1070,12 +1076,50 @@ fn main() -> anyhow::Result<()> {
             decode,
             show_request,
             pcr_index,
+            json,
         } => {
             let tpm = Tpm::open().map_err(|e| anyhow::anyhow!("Failed to open TPM: {e}"))?;
-            // Build provider enum
+            // Build provider enum, capturing the resolved MAA endpoint (if any).
+            let mut endpoint_used: Option<String> = None;
             let prov = match provider.as_str() {
-                "loopback" => azure_guest_attestation_sdk::client::Provider::Loopback,
-                "maa" => azure_guest_attestation_sdk::client::Provider::maa(endpoint.clone()),
+                "loopback" => {
+                    // --endpoint only applies to MAA; fail fast rather than
+                    // silently ignoring it for other providers.
+                    if endpoint.is_some() {
+                        return Err(anyhow::anyhow!(
+                            "--endpoint is only valid with --provider=maa"
+                        ));
+                    }
+                    azure_guest_attestation_sdk::client::Provider::Loopback
+                }
+                "maa" => {
+                    let ep = match endpoint {
+                        Some(e) => e,
+                        None => {
+                            match azure_guest_attestation_sdk::endpoint::detect_maa_base_url() {
+                                Ok(base) => {
+                                    if !json {
+                                        writeln!(writer, "Auto-selected MAA endpoint: {base}")?;
+                                    }
+                                    base
+                                }
+                                // Off-Azure (IMDS unreachable): fall back to a
+                                // default MAA endpoint rather than hard-failing.
+                                Err(e) => {
+                                    let base =
+                                    azure_guest_attestation_sdk::endpoint::DEFAULT_COMMERCIAL_BASE_URL
+                                        .to_string();
+                                    if !json {
+                                        writeln!(writer, "IMDS endpoint auto-detection failed ({e}); falling back to default MAA endpoint: {base}")?;
+                                    }
+                                    base
+                                }
+                            }
+                        }
+                    };
+                    endpoint_used = Some(ep.clone());
+                    azure_guest_attestation_sdk::client::Provider::maa(ep)
+                }
                 other => return Err(anyhow::anyhow!("Unknown provider: {other}")),
             };
             let client = azure_guest_attestation_sdk::client::AttestationClient::from_tpm(tpm);
@@ -1089,30 +1133,70 @@ fn main() -> anyhow::Result<()> {
                 pcr_selection,
             };
             let result = client.attest_guest(prov, Some(&opts))?;
-            if show_request {
-                writeln!(writer, "Request JSON:\n{}", result.request_json)?;
-            }
-            if let Some(tok) = &result.token {
-                writeln!(writer, "Token (raw/envelope b64url): {tok}")?;
-                if decode {
-                    // Try envelope decrypt using the ephemeral key (recreated from PCRs)
-                    match client.decrypt_token(&result.pcrs, tok) {
+
+            // Only decrypt the token envelope and parse claims when the output
+            // actually needs it (--json result or --decode). Otherwise keep the
+            // provider token unchanged and skip the extra crypto/JSON work.
+            // `attest_guest` may already return a decrypted JWT; if not, try an
+            // envelope decrypt using the ephemeral key (recreated from PCRs).
+            let need_claims = json || decode;
+            let (final_token, claims) = if need_claims {
+                match &result.token {
+                    Some(tok) => match client.decrypt_token(&result.pcrs, tok) {
                         Ok(Some(inner_jwt)) => {
-                            writeln!(writer, "Decrypted JWT:")?;
-                            decode_and_print_jwt(&inner_jwt, &mut *writer)?;
+                            let c = jwt_payload_value(&inner_jwt);
+                            (Some(inner_jwt), c)
                         }
-                        Ok(None) => {
-                            writeln!(writer, "(Token not in encrypted envelope format; attempting direct JWT decode)")?;
-                            decode_and_print_jwt(tok, &mut *writer)?;
+                        _ => {
+                            let c = jwt_payload_value(tok);
+                            (Some(tok.clone()), c)
                         }
-                        Err(e) => {
-                            writeln!(writer, "(Envelope parse/decrypt failed: {e}; attempting direct JWT decode)")?;
-                            decode_and_print_jwt(tok, &mut *writer)?;
-                        }
-                    }
+                    },
+                    None => (None, None),
                 }
             } else {
-                writeln!(writer, "(no token returned)")?;
+                (result.token.clone(), None)
+            };
+            let passed = final_token.is_some();
+
+            if json {
+                let mut out = serde_json::json!({
+                    "attestation_type": "guest",
+                    "provider": provider,
+                    "endpoint": endpoint_used,
+                    "passed": passed,
+                    "tcb": claims.as_ref().and_then(extract_tcb),
+                    "token": final_token,
+                    "claims": claims,
+                });
+                if show_request {
+                    out["request"] = serde_json::Value::String(result.request_json.clone());
+                }
+                writeln!(writer, "{}", serde_json::to_string_pretty(&out)?)?;
+            } else {
+                if show_request {
+                    writeln!(writer, "Request JSON:\n{}", result.request_json)?;
+                }
+                match &final_token {
+                    Some(tok) => {
+                        if let Some(raw) = &result.token {
+                            writeln!(writer, "Token (raw/envelope b64url): {raw}")?;
+                        }
+                        if decode {
+                            writeln!(writer, "Token (decoded):")?;
+                            decode_and_print_jwt(tok, &mut *writer)?;
+                        }
+                        writeln!(writer, "Attested Guest Successfully")?;
+                    }
+                    None => {
+                        writeln!(writer, "Attestation failed: no token returned")?;
+                    }
+                }
+            }
+
+            if !passed {
+                writer.flush()?;
+                std::process::exit(2);
             }
         }
         Commands::TeeAttest {
@@ -1121,6 +1205,7 @@ fn main() -> anyhow::Result<()> {
             force_snp,
             force_tdx,
             show_request,
+            json,
         } => {
             let tpm = Tpm::open().map_err(|e| anyhow::anyhow!("Failed to open TPM: {e}"))?;
             use azure_guest_attestation_sdk::report::CvmReportType;
@@ -1131,18 +1216,76 @@ fn main() -> anyhow::Result<()> {
             } else {
                 None
             };
+            let endpoint = match endpoint {
+                Some(e) => e,
+                None => match azure_guest_attestation_sdk::endpoint::detect_maa_base_url() {
+                    Ok(base) => {
+                        if !json {
+                            writeln!(writer, "Auto-selected MAA endpoint: {base}")?;
+                        }
+                        base
+                    }
+                    // Off-Azure (IMDS unreachable): fall back to a default MAA
+                    // endpoint rather than hard-failing.
+                    Err(e) => {
+                        let base =
+                            azure_guest_attestation_sdk::endpoint::DEFAULT_COMMERCIAL_BASE_URL
+                                .to_string();
+                        if !json {
+                            writeln!(writer, "IMDS endpoint auto-detection failed ({e}); falling back to default MAA endpoint: {base}")?;
+                        }
+                        base
+                    }
+                },
+            };
             let (token_or_body, payload) =
                 azure_guest_attestation_sdk::guest_attest::tee_only_attest_platform(
                     &tpm,
                     &endpoint,
                     override_type,
                 )?;
-            if show_request {
-                writeln!(writer, "Request JSON:\n{payload}")?;
+            let claims = jwt_payload_value(&token_or_body);
+            // A successful platform attestation yields a JWT we can parse.
+            // `submit_tee_only` returns the raw response body when it can't find
+            // a token field, so gate pass/fail on parseable claims rather than a
+            // non-empty body (which could be an error page).
+            let passed = claims.is_some();
+
+            if json {
+                let mut out = serde_json::json!({
+                    "attestation_type": "platform",
+                    "provider": "maa",
+                    "endpoint": endpoint,
+                    "passed": passed,
+                    "tcb": claims.as_ref().and_then(extract_tcb),
+                    "token": token_or_body,
+                    "claims": claims,
+                });
+                if show_request {
+                    out["request"] = serde_json::Value::String(payload.clone());
+                }
+                writeln!(writer, "{}", serde_json::to_string_pretty(&out)?)?;
+            } else {
+                if show_request {
+                    writeln!(writer, "Request JSON:\n{payload}")?;
+                }
+                writeln!(writer, "Token: {token_or_body}")?;
+                if decode {
+                    decode_and_print_jwt(&token_or_body, &mut *writer)?;
+                }
+                if passed {
+                    writeln!(writer, "Attested Platform Successfully")?;
+                } else {
+                    writeln!(
+                        writer,
+                        "Attestation failed: response did not contain a parseable token"
+                    )?;
+                }
             }
-            writeln!(writer, "Token: {token_or_body}")?;
-            if decode {
-                decode_and_print_jwt(&token_or_body, &mut *writer)?;
+
+            if !passed {
+                writer.flush()?;
+                std::process::exit(2);
             }
         }
         Commands::Endorsement { action, region } => {
@@ -1389,6 +1532,67 @@ fn base64_url_decode_vec(s: &str) -> anyhow::Result<Vec<u8>> {
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(s.as_bytes())
         .map_err(|e| anyhow::anyhow!("base64url decode failed: {e}"))
+}
+
+/// Decode a token to its JWT payload claims as a JSON value, if possible.
+///
+/// Handles both a bare `header.payload.signature` JWT and a base64url-encoded
+/// MAA envelope whose `Jwt` field contains a JWT. Returns `None` when the
+/// token is not a recognizable JWT (e.g. the loopback provider's echo token).
+fn jwt_payload_value(token: &str) -> Option<serde_json::Value> {
+    let parts: Vec<&str> = token.split('.').collect();
+    // A JWS/JWT has exactly three segments: header.payload.signature. Requiring
+    // all three avoids misclassifying arbitrary responses (e.g. a raw platform
+    // body that happens to contain a '.') as a token.
+    if parts.len() == 3 {
+        if let Ok(raw) = base64_url_decode_vec(parts[1]) {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) {
+                return Some(v);
+            }
+        }
+    }
+    // Envelope form: base64url → JSON with a "Jwt" field.
+    if let Ok(raw) = base64_url_decode_vec(token) {
+        if let Ok(text) = String::from_utf8(raw) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(jwt_str) = v.get("Jwt").and_then(|j| j.as_str()) {
+                    return jwt_payload_value(jwt_str);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Best-effort extraction of a TCB value from attestation token claims.
+///
+/// Searches the claims tree (which may nest TEE claims under
+/// `x-ms-isolation-tee`) for the first known TCB key and returns it as a
+/// string. Returns `None` when no known key is present.
+fn extract_tcb(claims: &serde_json::Value) -> Option<String> {
+    const KEYS: &[&str] = &[
+        "tdx_tee_tcb_svn",
+        "x-ms-sevsnpvm-reportedtcb",
+        "x-ms-sevsnpvm-currenttcb",
+    ];
+    fn walk(v: &serde_json::Value, keys: &[&str]) -> Option<String> {
+        match v {
+            serde_json::Value::Object(map) => {
+                for k in keys {
+                    if let Some(val) = map.get(*k) {
+                        return Some(match val {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        });
+                    }
+                }
+                map.values().find_map(|val| walk(val, keys))
+            }
+            serde_json::Value::Array(arr) => arr.iter().find_map(|val| walk(val, keys)),
+            _ => None,
+        }
+    }
+    walk(claims, KEYS)
 }
 
 fn decode_and_print_jwt(token: &str, writer: &mut dyn Write) -> anyhow::Result<()> {
