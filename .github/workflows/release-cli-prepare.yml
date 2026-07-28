@@ -1,0 +1,86 @@
+name: Release CLI (prepare)
+
+# Stage 1 of the CLI release: auto-bump the `azure-guest-attest` version on a
+# dedicated branch and open a pull request to `main`. A human merges the PR
+# (normal branch-protection flow), which triggers `release-cli.yml` to tag and
+# publish the binaries.
+#
+# This uses only the built-in GITHUB_TOKEN — it never pushes to protected
+# `main`, so no PAT, GitHub App, or branch-protection bypass is required.
+# Requires the repo setting: Settings -> Actions -> General ->
+# "Allow GitHub Actions to create and approve pull requests".
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: 'Semver bump level for the azure-guest-attest CLI'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-cli-prepare
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CRATE: azure-guest-attest
+  MANIFEST: tools/azure-guest-attest/Cargo.toml
+
+jobs:
+  prepare:
+    name: Open version-bump PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-edit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-edit
+
+      - name: Bump version
+        id: bump
+        run: |
+          set -euo pipefail
+          cargo set-version --bump "${{ inputs.level }}" -p "$CRATE"
+          # Refresh Cargo.lock to match the new manifest version.
+          cargo check -p "$CRATE" --quiet
+          version=$(grep -m1 '^version' "$MANIFEST" | sed -E 's/.*"(.*)".*/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "branch=release/$CRATE-v$version" >> "$GITHUB_OUTPUT"
+          echo "Prepared $CRATE v$version"
+
+      - name: Create branch, commit, and open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.bump.outputs.version }}"
+          branch="${{ steps.bump.outputs.branch }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$branch"
+          git add "$MANIFEST" Cargo.lock
+          git commit -m "release: ${CRATE} v${version}"
+          git push --force origin "$branch"
+          # Reuse an existing PR for this branch if one is already open.
+          if ! gh pr view "$branch" --json number >/dev/null 2>&1; then
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "release: ${CRATE} v${version}" \
+              --body "Automated version bump for \`${CRATE}\` to \`v${version}\`. Merging triggers the Release CLI workflow, which tags \`${CRATE}-v${version}\` and publishes the Linux (musl) and Windows binaries with SHA256 checksums."
+          fi

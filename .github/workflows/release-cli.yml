@@ -1,29 +1,22 @@
 name: Release CLI
 
-# Auto-bumps the `azure-guest-attest` CLI version, tags it
-# (`azure-guest-attest-v<version>`), then builds a static musl Linux binary and
-# a Windows binary and publishes them (with SHA256 checksums) to a GitHub
-# Release.
+# Stage 2 of the CLI release: when a version-bump PR (from
+# `release-cli-prepare.yml`) merges to `main` and changes the CLI manifest,
+# tag `azure-guest-attest-v<version>` and publish the Linux (musl) + Windows
+# binaries with SHA256 checksums to a GitHub Release.
 #
-# This is a single workflow on purpose: a tag pushed with the default
-# GITHUB_TOKEN does NOT trigger a separate tag-triggered workflow, so the
-# bump/tag and the build/publish live in one run gated by `needs`.
-#
-# Trigger manually from the Actions tab and pick the semver bump level.
-# Crate publishing (crates.io) is handled by a separate crates-release
-# workflow, not here.
+# Uses only the built-in GITHUB_TOKEN: it creates a *tag* and a *Release*
+# (allowed) and never pushes to the protected `main` branch, so no PAT, App,
+# or branch-protection bypass is required. Because the bump always lands via a
+# reviewed PR, the code has already passed the repo's required CI before this
+# runs. Re-runnable via workflow_dispatch (no-op if the tag already exists).
 
 on:
-  workflow_dispatch:
-    inputs:
-      level:
-        description: 'Semver bump level for the azure-guest-attest CLI'
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-        default: patch
+  push:
+    branches: [main]
+    paths:
+      - 'tools/azure-guest-attest/Cargo.toml'
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -40,67 +33,54 @@ env:
 
 jobs:
   # --------------------------------------------------------------------------
-  # Gate on CLI checks, bump the version, commit + tag on the current branch.
+  # Read the current CLI version; create the release tag if it doesn't exist.
+  # `release=false` (tag already present) short-circuits the build/publish.
   # --------------------------------------------------------------------------
-  prepare:
-    name: Bump version + tag
+  tag:
+    name: Create release tag
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.bump.outputs.version }}
-      tag: ${{ steps.bump.outputs.tag }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      release: ${{ steps.check.outputs.release }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # A PAT/app token (RELEASE_TOKEN) is preferred so the push works with
-          # branch protection; falls back to GITHUB_TOKEN for unprotected repos.
-          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          fetch-tags: true
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Install cargo-edit
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-edit
-
-      # Gate: do not release a broken CLI (mirror the repo's required checks).
-      - name: Format check
-        run: cargo fmt --all -- --check
-      - name: Clippy (CLI)
-        run: cargo clippy -p ${{ env.CRATE }} --all-targets -- -D warnings
-      - name: Test (CLI)
-        run: cargo test -p ${{ env.CRATE }}
-
-      - name: Bump version
-        id: bump
+      - name: Determine version and whether to release
+        id: check
         run: |
           set -euo pipefail
-          cargo set-version --bump "${{ inputs.level }}" -p "$CRATE"
-          # Refresh Cargo.lock to match the new manifest version.
-          cargo check -p "$CRATE" --quiet
           version=$(grep -m1 '^version' "$MANIFEST" | sed -E 's/.*"(.*)".*/\1/')
+          tag="$CRATE-v$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$CRATE-v$version" >> "$GITHUB_OUTPUT"
-          echo "Bumped $CRATE to $version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Will release $tag."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Commit + tag
+      - name: Create + push tag
+        if: steps.check.outputs.release == 'true'
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$MANIFEST" Cargo.lock
-          git commit -m "release: ${CRATE} v${{ steps.bump.outputs.version }}"
-          git tag "${{ steps.bump.outputs.tag }}"
-          git push origin "HEAD:${{ github.ref_name }}" --follow-tags
+          git tag "${{ steps.check.outputs.tag }}"
+          git push origin "${{ steps.check.outputs.tag }}"
 
   # --------------------------------------------------------------------------
-  # Build the binaries at the freshly-created tag and publish the Release.
+  # Build the binaries at the freshly-created tag.
   # --------------------------------------------------------------------------
   build:
     name: Build (${{ matrix.target }})
-    needs: prepare
+    needs: tag
+    if: needs.tag.outputs.release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -116,7 +96,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.tag.outputs.tag }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -157,13 +137,14 @@ jobs:
           if-no-files-found: error
 
   # --------------------------------------------------------------------------
-  # Single publish job: collect all build artifacts and create/update the
-  # Release exactly once. Publishing from each matrix job concurrently races
-  # on Release creation/metadata, so it is centralized here.
+  # Single publish job: collect all build artifacts and create the Release
+  # exactly once (publishing from each matrix job would race on Release
+  # creation/metadata).
   # --------------------------------------------------------------------------
   publish:
     name: Publish GitHub Release
-    needs: [prepare, build]
+    needs: [tag, build]
+    if: needs.tag.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download all build artifacts
@@ -175,8 +156,8 @@ jobs:
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: azure-guest-attest ${{ needs.prepare.outputs.version }}
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: azure-guest-attest ${{ needs.tag.outputs.version }}
           generate_release_notes: true
           files: |
             dist/*
