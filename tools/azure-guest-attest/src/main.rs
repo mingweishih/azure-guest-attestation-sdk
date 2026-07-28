@@ -1087,16 +1087,25 @@ fn main() -> anyhow::Result<()> {
                     let ep = match endpoint {
                         Some(e) => e,
                         None => {
-                            let base = azure_guest_attestation_sdk::endpoint::detect_maa_base_url()
-                                .map_err(|e| {
-                                    anyhow::anyhow!(
-                                        "Failed to auto-select MAA endpoint from IMDS region: {e}"
-                                    )
-                                })?;
-                            if !json {
-                                writeln!(writer, "Auto-selected MAA endpoint: {base}")?;
+                            match azure_guest_attestation_sdk::endpoint::detect_maa_base_url() {
+                                Ok(base) => {
+                                    if !json {
+                                        writeln!(writer, "Auto-selected MAA endpoint: {base}")?;
+                                    }
+                                    base
+                                }
+                                // Off-Azure (IMDS unreachable): fall back to a
+                                // default MAA endpoint rather than hard-failing.
+                                Err(e) => {
+                                    let base =
+                                    azure_guest_attestation_sdk::endpoint::DEFAULT_COMMERCIAL_BASE_URL
+                                        .to_string();
+                                    if !json {
+                                        writeln!(writer, "IMDS endpoint auto-detection failed ({e}); falling back to default MAA endpoint: {base}")?;
+                                    }
+                                    base
+                                }
                             }
-                            base
                         }
                     };
                     endpoint_used = Some(ep.clone());
@@ -1165,7 +1174,7 @@ fn main() -> anyhow::Result<()> {
                             writeln!(writer, "Token (raw/envelope b64url): {raw}")?;
                         }
                         if decode {
-                            writeln!(writer, "Decrypted JWT:")?;
+                            writeln!(writer, "Token (decoded):")?;
                             decode_and_print_jwt(tok, &mut *writer)?;
                         }
                         writeln!(writer, "Attested Guest Successfully")?;
@@ -1200,18 +1209,25 @@ fn main() -> anyhow::Result<()> {
             };
             let endpoint = match endpoint {
                 Some(e) => e,
-                None => {
-                    let base = azure_guest_attestation_sdk::endpoint::detect_maa_base_url()
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to auto-select MAA endpoint from IMDS region: {e}"
-                            )
-                        })?;
-                    if !json {
-                        writeln!(writer, "Auto-selected MAA endpoint: {base}")?;
+                None => match azure_guest_attestation_sdk::endpoint::detect_maa_base_url() {
+                    Ok(base) => {
+                        if !json {
+                            writeln!(writer, "Auto-selected MAA endpoint: {base}")?;
+                        }
+                        base
                     }
-                    base
-                }
+                    // Off-Azure (IMDS unreachable): fall back to a default MAA
+                    // endpoint rather than hard-failing.
+                    Err(e) => {
+                        let base =
+                            azure_guest_attestation_sdk::endpoint::DEFAULT_COMMERCIAL_BASE_URL
+                                .to_string();
+                        if !json {
+                            writeln!(writer, "IMDS endpoint auto-detection failed ({e}); falling back to default MAA endpoint: {base}")?;
+                        }
+                        base
+                    }
+                },
             };
             let (token_or_body, payload) =
                 azure_guest_attestation_sdk::guest_attest::tee_only_attest_platform(

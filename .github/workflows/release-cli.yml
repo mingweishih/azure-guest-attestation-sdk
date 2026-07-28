@@ -58,14 +58,16 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Install cargo-edit
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-edit
 
-      # Gate: do not release a broken CLI.
+      # Gate: do not release a broken CLI (mirror the repo's required checks).
+      - name: Format check
+        run: cargo fmt --all -- --check
       - name: Clippy (CLI)
         run: cargo clippy -p ${{ env.CRATE }} --all-targets -- -D warnings
       - name: Test (CLI)
