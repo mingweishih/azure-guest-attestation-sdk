@@ -10,6 +10,7 @@
 
 use reqwest::blocking::Client;
 use std::io;
+use std::time::Duration;
 
 /// Subset IMDS client for platform endorsements (SNP VCEK chain + TDX quote).
 ///
@@ -19,11 +20,22 @@ pub struct ImdsClient {
 }
 
 impl ImdsClient {
-    /// Create a new IMDS client with default HTTP settings.
+    /// Create a new IMDS client.
+    ///
+    /// A short connect timeout and an overall request timeout are configured
+    /// so IMDS calls fail fast when running off-Azure (the link-local metadata
+    /// address `169.254.169.254` is unreachable there). Without this, callers
+    /// such as [`get_region`](Self::get_region) — and the CLI's endpoint
+    /// auto-detection — could hang indefinitely instead of falling back.
     pub fn new() -> Self {
-        Self {
-            http: Client::new(),
-        }
+        // Connect timeout fails fast when the metadata IP is unroutable;
+        // the longer overall timeout accommodates TD Quote generation on Azure.
+        let http = Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        Self { http }
     }
 
     fn get_json(&self, url: &str) -> io::Result<serde_json::Value> {
