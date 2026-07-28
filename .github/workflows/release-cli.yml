@@ -126,7 +126,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build release binary
-        run: cargo build --release -p ${{ env.BIN_NAME }} --target ${{ matrix.target }}
+        run: cargo build --release -p ${{ env.CRATE }} --target ${{ matrix.target }}
 
       - name: Stage artifact + checksum (Linux)
         if: matrix.os == 'ubuntu-latest'
@@ -146,6 +146,29 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/$env:BIN_NAME${{ matrix.ext }}" "dist/$asset"
           (Get-FileHash "dist/$asset" -Algorithm SHA256).Hash.ToLower() + "  $asset" |
             Out-File -Encoding ascii "dist/$asset.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
+  # Single publish job: collect all build artifacts and create/update the
+  # Release exactly once. Publishing from each matrix job concurrently races
+  # on Release creation/metadata, so it is centralized here.
+  # --------------------------------------------------------------------------
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2

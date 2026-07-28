@@ -200,6 +200,17 @@ impl Default for ImdsClient {
 mod tests {
     use super::*;
     use injectorpp::interface::injector::*;
+    use std::sync::Mutex;
+
+    // injectorpp patches process-global memory, so tests that install mocks
+    // must not run concurrently under `cargo test`. Serialize them behind a
+    // shared mutex. `unwrap_or_else(into_inner)` recovers from poisoning so a
+    // single failing/panicking test does not cascade into the others.
+    static INJECT_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn inject_guard() -> std::sync::MutexGuard<'static, ()> {
+        INJECT_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn imds_client_new_creates_instance() {
@@ -234,6 +245,7 @@ mod tests {
 
     #[test]
     fn get_vcek_chain_happy_path() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
@@ -257,6 +269,7 @@ mod tests {
 
     #[test]
     fn get_vcek_chain_missing_fields_returns_empty() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
@@ -277,6 +290,7 @@ mod tests {
 
     #[test]
     fn get_vcek_chain_error_propagates() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
@@ -301,6 +315,7 @@ mod tests {
 
     #[test]
     fn get_vcek_chain_partial_fields() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
@@ -324,6 +339,7 @@ mod tests {
 
     #[test]
     fn get_region_success_trims_body() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
@@ -340,6 +356,7 @@ mod tests {
 
     #[test]
     fn get_region_empty_body_errors() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
@@ -361,6 +378,7 @@ mod tests {
 
     #[test]
     fn get_region_non_success_status_propagates() {
+        let _guard = inject_guard();
         let mut injector = InjectorPP::new();
         unsafe {
             injector
