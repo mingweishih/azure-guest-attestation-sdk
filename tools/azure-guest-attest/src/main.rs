@@ -1116,21 +1116,28 @@ fn main() -> anyhow::Result<()> {
             };
             let result = client.attest_guest(prov, Some(&opts))?;
 
-            // Resolve the final (decrypted) token and its claims, if any.
-            // `attest_guest` may already return a decrypted JWT; if not, try
-            // an envelope decrypt using the ephemeral key (recreated from PCRs).
-            let (final_token, claims) = match &result.token {
-                Some(tok) => match client.decrypt_token(&result.pcrs, tok) {
-                    Ok(Some(inner_jwt)) => {
-                        let c = jwt_payload_value(&inner_jwt);
-                        (Some(inner_jwt), c)
-                    }
-                    _ => {
-                        let c = jwt_payload_value(tok);
-                        (Some(tok.clone()), c)
-                    }
-                },
-                None => (None, None),
+            // Only decrypt the token envelope and parse claims when the output
+            // actually needs it (--json result or --decode). Otherwise keep the
+            // provider token unchanged and skip the extra crypto/JSON work.
+            // `attest_guest` may already return a decrypted JWT; if not, try an
+            // envelope decrypt using the ephemeral key (recreated from PCRs).
+            let need_claims = json || decode;
+            let (final_token, claims) = if need_claims {
+                match &result.token {
+                    Some(tok) => match client.decrypt_token(&result.pcrs, tok) {
+                        Ok(Some(inner_jwt)) => {
+                            let c = jwt_payload_value(&inner_jwt);
+                            (Some(inner_jwt), c)
+                        }
+                        _ => {
+                            let c = jwt_payload_value(tok);
+                            (Some(tok.clone()), c)
+                        }
+                    },
+                    None => (None, None),
+                }
+            } else {
+                (result.token.clone(), None)
             };
             let passed = final_token.is_some();
 
@@ -1213,7 +1220,11 @@ fn main() -> anyhow::Result<()> {
                     override_type,
                 )?;
             let claims = jwt_payload_value(&token_or_body);
-            let passed = !token_or_body.trim().is_empty();
+            // A successful platform attestation yields a JWT we can parse.
+            // `submit_tee_only` returns the raw response body when it can't find
+            // a token field, so gate pass/fail on parseable claims rather than a
+            // non-empty body (which could be an error page).
+            let passed = claims.is_some();
 
             if json {
                 let mut out = serde_json::json!({

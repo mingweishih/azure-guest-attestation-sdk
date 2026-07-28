@@ -126,7 +126,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build release binary
-        run: cargo build --release -p ${{ env.CRATE }} --target ${{ matrix.target }}
+        run: cargo build --release --locked -p ${{ env.CRATE }} --target ${{ matrix.target }}
 
       - name: Stage artifact + checksum (Linux)
         if: matrix.os == 'ubuntu-latest'
