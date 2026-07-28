@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Platform-agnostic TPM 2.0 command interface for Azure guest VMs"
 documentation = "https://docs.rs/azure-tpm"
 readme = "README.md"
-keywords = ["tpm", "tpm2", "attestation", "azure", "confidential-computing"]
+keywords = ["tpm", "tpm2", "attestation", "azure", "confidential-vm"]
 categories = ["cryptography", "hardware-support"]
 
 # Inherit from workspace

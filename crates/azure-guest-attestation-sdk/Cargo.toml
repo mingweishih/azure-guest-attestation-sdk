@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Azure Guest Attestation SDK - TPM 2.0 and TEE attestation for CVM and TrustedLaunch VMs"
 documentation = "https://docs.rs/azure-guest-attestation-sdk"
 readme = "README.md"
-keywords = ["azure", "attestation", "tpm", "confidential-computing", "tee"]
+keywords = ["azure", "attestation", "tpm", "confidential-vm", "tee"]
 categories = ["cryptography", "hardware-support", "api-bindings"]
 
 # Inherit from workspace
