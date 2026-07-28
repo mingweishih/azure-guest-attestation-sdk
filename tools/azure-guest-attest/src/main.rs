@@ -1276,7 +1276,10 @@ fn main() -> anyhow::Result<()> {
                 if passed {
                     writeln!(writer, "Attested Platform Successfully")?;
                 } else {
-                    writeln!(writer, "Attestation failed: no token returned")?;
+                    writeln!(
+                        writer,
+                        "Attestation failed: response did not contain a parseable token"
+                    )?;
                 }
             }
 
