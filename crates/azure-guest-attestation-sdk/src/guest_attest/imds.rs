@@ -43,16 +43,15 @@ impl ImdsClient {
         Ok(v)
     }
 
-    /// Fetch the current VM's Azure region (e.g. `"eastus"`) from IMDS.
+    /// GET a URL with the IMDS `Metadata: true` header and return the response
+    /// body as text. Errors on transport failure or a non-2xx status.
     ///
-    /// Queries `instance/compute/location` in text form. The returned string
-    /// is the region name as reported by the platform; callers typically pass
-    /// it to [`maa_base_url_for_region`](crate::endpoint::maa_base_url_for_region).
-    pub fn get_region(&self) -> io::Result<String> {
-        const LOCATION_ENDPOINT: &str = "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-01-01&format=text";
+    /// Kept separate from [`get_region`](Self::get_region) so the network path
+    /// can be mocked in unit tests (see the injectorpp tests in this module).
+    fn get_text(&self, url: &str) -> io::Result<String> {
         let resp = self
             .http
-            .get(LOCATION_ENDPOINT)
+            .get(url)
             .header("Metadata", "true")
             .send()
             .map_err(|e| io::Error::other(format!("http error: {e}")))?;
@@ -60,11 +59,18 @@ impl ImdsClient {
         if !status.is_success() {
             return Err(io::Error::other(format!("status {status}")));
         }
-        let region = resp
-            .text()
-            .map_err(|e| io::Error::other(format!("read body: {e}")))?
-            .trim()
-            .to_string();
+        resp.text()
+            .map_err(|e| io::Error::other(format!("read body: {e}")))
+    }
+
+    /// Fetch the current VM's Azure region (e.g. `"eastus"`) from IMDS.
+    ///
+    /// Queries `instance/compute/location` in text form. The returned string
+    /// is the region name as reported by the platform; callers typically pass
+    /// it to [`maa_base_url_for_region`](crate::endpoint::maa_base_url_for_region).
+    pub fn get_region(&self) -> io::Result<String> {
+        const LOCATION_ENDPOINT: &str = "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-01-01&format=text";
+        let region = self.get_text(LOCATION_ENDPOINT)?.trim().to_string();
         if region.is_empty() {
             return Err(io::Error::other("IMDS returned empty region"));
         }
@@ -307,5 +313,67 @@ mod tests {
         let result = client.get_vcek_chain().unwrap();
         // certificateChain defaults to ""
         assert_eq!(result, b"only-vcek");
+    }
+
+    // ---- get_region: mock the private get_text helper ----------------------
+
+    fn fake_get_text_region(_self: &ImdsClient, _url: &str) -> io::Result<String> {
+        // Whitespace around the region should be trimmed.
+        Ok("  eastus\n".to_string())
+    }
+
+    #[test]
+    fn get_region_success_trims_body() {
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_text))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(fake_get_text_region));
+        }
+        let client = ImdsClient::new();
+        assert_eq!(client.get_region().unwrap(), "eastus");
+    }
+
+    fn fake_get_text_empty(_self: &ImdsClient, _url: &str) -> io::Result<String> {
+        Ok("   \n".to_string())
+    }
+
+    #[test]
+    fn get_region_empty_body_errors() {
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_text))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(fake_get_text_empty));
+        }
+        let client = ImdsClient::new();
+        let err = client.get_region().unwrap_err();
+        assert!(
+            err.to_string().contains("empty region"),
+            "expected empty-region error: {err}"
+        );
+    }
+
+    fn fake_get_text_status_error(_self: &ImdsClient, _url: &str) -> io::Result<String> {
+        // Simulates the non-2xx branch inside get_text.
+        Err(io::Error::other("status 404 Not Found"))
+    }
+
+    #[test]
+    fn get_region_non_success_status_propagates() {
+        let mut injector = InjectorPP::new();
+        unsafe {
+            injector
+                .when_called_unchecked(injectorpp::func_unchecked!(ImdsClient::get_text))
+                .will_execute_raw_unchecked(injectorpp::func_unchecked!(
+                    fake_get_text_status_error
+                ));
+        }
+        let client = ImdsClient::new();
+        let err = client.get_region().unwrap_err();
+        assert!(
+            err.to_string().contains("status 404"),
+            "expected propagated status error: {err}"
+        );
     }
 }

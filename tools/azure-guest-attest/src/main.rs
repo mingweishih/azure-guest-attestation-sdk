@@ -1085,7 +1085,7 @@ fn main() -> anyhow::Result<()> {
                 "loopback" => azure_guest_attestation_sdk::client::Provider::Loopback,
                 "maa" => {
                     let ep = match endpoint {
-                        Some(e) => e.clone(),
+                        Some(e) => e,
                         None => {
                             let base = azure_guest_attestation_sdk::endpoint::detect_maa_base_url()
                                 .map_err(|e| {
@@ -1192,7 +1192,7 @@ fn main() -> anyhow::Result<()> {
                 None
             };
             let endpoint = match endpoint {
-                Some(e) => e.clone(),
+                Some(e) => e,
                 None => {
                     let base = azure_guest_attestation_sdk::endpoint::detect_maa_base_url()
                         .map_err(|e| {
