@@ -1,6 +1,6 @@
 [package]
 name = "azure-guest-attest"
-version = "0.1.0"
+version = "0.2.0"
 description = "CLI tool for Azure Guest Attestation operations"
 
 # Inherit from workspace
@@ -11,8 +11,10 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-# Use workspace dependency for the SDK
-azure-guest-attestation-sdk.workspace = true
+# Direct path dep (not workspace-inherited) so `default-features = false`
+# actually takes effect — the crypto/TLS backend is chosen via this crate's
+# features below. Inherited deps ignore a member-level `default-features`.
+azure-guest-attestation-sdk = { path = "../../crates/azure-guest-attestation-sdk", version = "0.1.0", default-features = false }
 
 # Workspace dependencies
 clap.workspace = true
@@ -22,14 +24,15 @@ base64.workspace = true
 hex.workspace = true
 anyhow.workspace = true
 
-# Tool-specific dependencies
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
-
 # Optional dependencies
 x509-parser = { version = "0.16", optional = true }
 jwt = { version = "0.16", optional = true }
 
 [features]
-default = []
+# Portable pure-Rust crypto + rustls TLS (default).
+default = ["rustcrypto"]
+rustcrypto = ["azure-guest-attestation-sdk/rustcrypto"]
+# Platform crypto + native-tls (OpenSSL on Linux, SChannel/CNG on Windows).
+# The shipped release binary is built with `--no-default-features --features native`.
+native = ["azure-guest-attestation-sdk/native"]
 with-x509 = ["x509-parser"]
-static = []

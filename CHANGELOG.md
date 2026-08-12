@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`azure-guest-attest` CLI 0.2.0 — pluggable crypto backend.** The CLI can now
+  be built against platform crypto instead of the pure-Rust `ring`/`aes`/`sha1`
+  crates (a compliance requirement). A new `native` feature routes TLS through
+  `native-tls` (OpenSSL on Linux, SChannel on Windows) and AES-GCM / SHA-1
+  through OpenSSL (Linux) / CNG-BCrypt (Windows). The shipped release binary is
+  built with `--no-default-features --features native` and contains none of
+  `ring`, `aes`, or `sha1`.
+  - **Breaking (packaging):** the `native` Linux binary is **dynamically linked**
+    against the system OpenSSL — the fully-static musl artifact is no longer
+    produced. The Linux release asset moves from `x86_64-unknown-linux-musl` to
+    `x86_64-unknown-linux-gnu` and requires `libssl`/`libcrypto` on the host.
+    Windows uses the OS-provided SChannel/CNG (no extra runtime dependency).
+
+### Added
+
+- **Feature-gated crypto backends** in `azure-tpm` and
+  `azure-guest-attestation-sdk`: `rustcrypto` (default, portable, pure-Rust,
+  published to crates.io) and `native` (platform crypto). The published crates
+  keep the pure-Rust default so downstream consumers are unaffected.
+
+### Removed
+
+- Unused `sha1` and `digest` dependencies from `azure-guest-attestation-sdk`,
+  and the unused `reqwest` dependency and static-CRT `build.rs` from the CLI.
+
 ## [0.1.0] - 2026-03-18
 
 Initial release. `azure-tpm` and `azure-guest-attestation-sdk` are publishable
