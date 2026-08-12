@@ -1441,6 +1441,7 @@ fn td_quote_summary(parsed: &ParsedTdQuote<'_>) -> String {
     let body_label = match &parsed.body {
         TdQuoteBody::Tdx10(_) => "TDX 1.0",
         TdQuoteBody::Tdx15(_) => "TDX 1.5",
+        TdQuoteBody::Tdx15Ex(_) => "TDX 1.5 (Service-TD ext)",
         TdQuoteBody::Unknown { .. } => "unknown",
     };
     format!(

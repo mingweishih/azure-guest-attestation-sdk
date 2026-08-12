@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **QGS `GET_QUOTE_RESP` unwrapping** in the TD quote parser. `parse_td_quote`
+  now transparently detects and unwraps the Intel QGS response envelope
+  (`qgs_msg_get_quote_resp_t`) that the TDX Quote Generation Service and
+  MigTD / Service-TD "inbox" tooling emit, then parses the inner quote. A
+  malformed or inconsistent envelope is rejected instead of silently
+  mis-parsed. Exposed publicly as `unwrap_qgs_get_quote_response`.
+- **TDX 1.5 extended Service-TD quote body** (`TdQuoteBodyTdx15Ex`, TD Quote
+  Body type 4 / `sgx_report2_body_v1_5_ex_t`) carrying the migration-history
+  fields (`td_id`, `vmid`, `devinfo`, init/current SERVTD hash & attributes).
+- **Extended TDINFO** on the report side (`TdInfoExtensionV15Ex` /
+  `tee_info_v1_5_ex_t`), surfaced via `TdReport::td_info_extension_v15_ex()`
+  when the report type version is 3.
+
 ## [0.1.0] - 2026-03-18
 
 Initial release. `azure-tpm` and `azure-guest-attestation-sdk` are publishable
