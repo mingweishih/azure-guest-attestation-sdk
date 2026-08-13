@@ -24,7 +24,7 @@ bitfield-struct = "0.6"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-sha1.workspace = true
+sha1 = { workspace = true, optional = true }
 digest.workspace = true
 hex.workspace = true
 tracing.workspace = true
@@ -32,6 +32,19 @@ rand.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys.workspace = true
+
+# `native` crypto backend on Linux links the system OpenSSL (dynamic).
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", optional = true }
+
+[features]
+# Portable pure-Rust crypto (default; published to crates.io).
+default = ["rustcrypto"]
+rustcrypto = ["dep:sha1"]
+# Platform crypto: OpenSSL (Linux) / CNG-BCrypt (Windows). Used by the shipped
+# CLI so the binary carries no RustCrypto SHA-1. Requires a dynamic OpenSSL on
+# Linux. Build with `--no-default-features --features native`.
+native = ["dep:openssl"]
 
 [lints]
 workspace = true

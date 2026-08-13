@@ -44,6 +44,8 @@
 pub mod client;
 /// Minimal COSE_Sign1 (RFC 9052) parser.
 pub mod cose;
+/// AES-GCM backend for token decryption (pure-Rust or platform crypto).
+mod crypto;
 /// TDX endorsement retrieval from Azure THIM.
 pub mod endorsement;
 /// MAA regional endpoint selection (region → shared MAA base URL).
