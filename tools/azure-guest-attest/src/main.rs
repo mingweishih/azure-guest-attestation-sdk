@@ -1566,33 +1566,65 @@ fn jwt_payload_value(token: &str) -> Option<serde_json::Value> {
 
 /// Best-effort extraction of a TCB value from attestation token claims.
 ///
-/// Searches the claims tree (which may nest TEE claims under
-/// `x-ms-isolation-tee`) for the first known TCB key and returns it as a
-/// string. Returns `None` when no known key is present.
+/// Searches the claims tree (including TEE claims nested under
+/// `x-ms-isolation-tee`). For **TDX** it returns `tdx_tee_tcb_svn` (already a hex
+/// SVN). For **SEV-SNP** — where MAA reports only the granular component SVNs —
+/// it renders the 8-byte AMD `TCB_VERSION` as big-endian uppercase hex (e.g.
+/// `DB18000000000004`), composed from
+/// `x-ms-sevsnpvm-{bootloader,tee,snpfw,microcode}-svn`. This matches the TCB
+/// string historically emitted by cvm-attestation-tools and used by ACC-VM-Tests
+/// as a grouping key. Returns `None` when the token reports nothing usable.
 fn extract_tcb(claims: &serde_json::Value) -> Option<String> {
-    const KEYS: &[&str] = &[
-        "tdx_tee_tcb_svn",
-        "x-ms-sevsnpvm-reportedtcb",
-        "x-ms-sevsnpvm-currenttcb",
-    ];
-    fn walk(v: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    // TDX reports a composite TCB SVN directly; SNP is composed from components.
+    const DIRECT_KEYS: &[&str] = &["tdx_tee_tcb_svn"];
+
+    fn value_to_string(val: &serde_json::Value) -> String {
+        match val {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        }
+    }
+
+    // Render the AMD SEV-SNP `TCB_VERSION` from its component SVN claims as
+    // big-endian uppercase hex: [microcode, snp, reserved x4, tee, bootloader].
+    fn compose_snp_tcb(map: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+        let svn = |k: &str| map.get(k).and_then(serde_json::Value::as_u64);
+        let bootloader = svn("x-ms-sevsnpvm-bootloader-svn")?;
+        let tee = svn("x-ms-sevsnpvm-tee-svn")?;
+        let snpfw = svn("x-ms-sevsnpvm-snpfw-svn")?;
+        let microcode = svn("x-ms-sevsnpvm-microcode-svn")?;
+        let bytes = [
+            microcode as u8,
+            snpfw as u8,
+            0,
+            0,
+            0,
+            0,
+            tee as u8,
+            bootloader as u8,
+        ];
+        Some(hex::encode_upper(bytes))
+    }
+
+    fn walk(v: &serde_json::Value) -> Option<String> {
         match v {
             serde_json::Value::Object(map) => {
-                for k in keys {
+                for k in DIRECT_KEYS {
                     if let Some(val) = map.get(*k) {
-                        return Some(match val {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        });
+                        return Some(value_to_string(val));
                     }
                 }
-                map.values().find_map(|val| walk(val, keys))
+                if let Some(tcb) = compose_snp_tcb(map) {
+                    return Some(tcb);
+                }
+                map.values().find_map(walk)
             }
-            serde_json::Value::Array(arr) => arr.iter().find_map(|val| walk(val, keys)),
+            serde_json::Value::Array(arr) => arr.iter().find_map(walk),
             _ => None,
         }
     }
-    walk(claims, KEYS)
+
+    walk(claims)
 }
 
 fn decode_and_print_jwt(token: &str, writer: &mut dyn Write) -> anyhow::Result<()> {
@@ -1891,7 +1923,75 @@ mod tests {
         parse_td_quote, TdQuoteBodyTdx10, TdQuoteBodyType, TdQuoteHeader, TD_QUOTE_BODY_V1_0_SIZE,
     };
     use core::mem::size_of;
+    use serde_json::json;
     use std::path::PathBuf;
+
+    #[test]
+    fn extract_tcb_composes_snp_tee_attestation_top_level() {
+        // TEE (platform) attestation sample: SNP claims at the top level.
+        // AMD TCB_VERSION big-endian hex: microcode=0xDB, snp=0x18, tee=0, bl=0x04.
+        let claims = json!({
+            "x-ms-attestation-type": "sevsnpvm",
+            "x-ms-sevsnpvm-bootloader-svn": 4,
+            "x-ms-sevsnpvm-tee-svn": 0,
+            "x-ms-sevsnpvm-snpfw-svn": 24,
+            "x-ms-sevsnpvm-microcode-svn": 219,
+        });
+        assert_eq!(extract_tcb(&claims).as_deref(), Some("DB18000000000004"));
+    }
+
+    #[test]
+    fn extract_tcb_composes_snp_from_nested_isolation_tee() {
+        // Guest attestation sample: SNP claims nested under x-ms-isolation-tee.
+        let claims = json!({
+            "x-ms-attestation-type": "azurevm",
+            "x-ms-isolation-tee": {
+                "x-ms-attestation-type": "sevsnpvm",
+                "x-ms-sevsnpvm-bootloader-svn": 4,
+                "x-ms-sevsnpvm-tee-svn": 0,
+                "x-ms-sevsnpvm-snpfw-svn": 24,
+                "x-ms-sevsnpvm-microcode-svn": 219,
+            }
+        });
+        assert_eq!(extract_tcb(&claims).as_deref(), Some("DB18000000000004"));
+    }
+
+    #[test]
+    fn extract_tcb_reads_tdx_tee_tcb_svn_top_level() {
+        // Platform TDX (tee) attestation: tdx_tee_tcb_svn at the top level.
+        let claims = json!({
+            "x-ms-attestation-type": "tdxvm",
+            "tdx_tee_tcb_svn": "0d010400000000000000000000000000",
+            "tdx_seamsvn": 269,
+        });
+        assert_eq!(
+            extract_tcb(&claims).as_deref(),
+            Some("0d010400000000000000000000000000")
+        );
+    }
+
+    #[test]
+    fn extract_tcb_reads_tdx_tee_tcb_svn_nested() {
+        // Guest TDX attestation: tdx_tee_tcb_svn nested under x-ms-isolation-tee.
+        let claims = json!({
+            "x-ms-attestation-type": "azurevm",
+            "x-ms-isolation-tee": {
+                "x-ms-attestation-type": "tdxvm",
+                "tdx_tee_tcb_svn": "0d010400000000000000000000000000",
+                "tdx_seamsvn": 269,
+            }
+        });
+        assert_eq!(
+            extract_tcb(&claims).as_deref(),
+            Some("0d010400000000000000000000000000")
+        );
+    }
+
+    #[test]
+    fn extract_tcb_none_without_tcb_fields() {
+        let claims = json!({ "x-ms-attestation-type": "azurevm", "secureboot": true });
+        assert_eq!(extract_tcb(&claims), None);
+    }
 
     #[test]
     fn td_quote_summary_reports_key_fields() {

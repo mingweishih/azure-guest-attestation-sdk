@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CLI `--json` `tcb` is derived from the MAA claims for SEV-SNP.** MAA reports
+  only the granular SNP SVNs, so the CLI now renders the 8-byte AMD `TCB_VERSION`
+  as big-endian hex (e.g. `DB18000000000004`) composed from
+  `x-ms-sevsnpvm-{bootloader,tee,snpfw,microcode}-svn` instead of leaving `tcb`
+  `null`. This matches the TCB string historically emitted by cvm-attestation-tools
+  and used by ACC-VM-Tests as a grouping key. TDX continues to use
+  `tdx_tee_tcb_svn`. Works at the top level and nested under `x-ms-isolation-tee`.
+
 - **`azure-guest-attest` CLI 0.2.0 — pluggable crypto backend.** The CLI can now
   be built against platform crypto instead of the pure-Rust `ring`/`aes`/`sha1`
   crates (a compliance requirement). A new `native` feature routes TLS through
