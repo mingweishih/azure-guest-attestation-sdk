@@ -51,6 +51,8 @@
 
 /// High-level TPM command implementations.
 pub mod commands;
+/// SHA-1 backend for event-log PCR replay (pure-Rust or platform crypto).
+mod crypto;
 /// Platform-agnostic TPM device communication.
 pub mod device;
 /// Dedicated error types for TPM 2.0 operations.

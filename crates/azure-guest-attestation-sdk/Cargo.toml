@@ -18,7 +18,7 @@ rust-version.workspace = true
 name = "azure_guest_attestation_sdk"
 
 [dependencies]
-azure-tpm = { path = "../azure-tpm", version = "0.1.0" }
+azure-tpm = { path = "../azure-tpm", version = "0.1.0", default-features = false }
 bitfield-struct = "0.6"
 
 # Workspace dependencies
@@ -27,18 +27,29 @@ serde.workspace = true
 serde_json.workspace = true
 rand.workspace = true
 sha2.workspace = true
-sha1.workspace = true
-digest.workspace = true
 hex.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-aes-gcm.workspace = true
+aes-gcm = { workspace = true, optional = true }
 
-# Use local reqwest spec to avoid workspace conflict
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+# HTTP. TLS backend is feature-selected: `rustls-tls` (default) or `native-tls`.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys.workspace = true
+
+# `native` crypto backend on Linux links the system OpenSSL (dynamic).
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", optional = true }
+
+[features]
+# Portable pure-Rust crypto + rustls TLS (default; published to crates.io).
+default = ["rustcrypto"]
+rustcrypto = ["dep:aes-gcm", "reqwest/rustls-tls", "azure-tpm/rustcrypto"]
+# Platform crypto + native-tls: OpenSSL (Linux) / SChannel + CNG (Windows).
+# Used by the shipped CLI so the binary carries no RustCrypto/ring crates.
+# Build with `--no-default-features --features native`.
+native = ["dep:openssl", "reqwest/native-tls", "azure-tpm/native"]
 
 [lints]
 workspace = true
