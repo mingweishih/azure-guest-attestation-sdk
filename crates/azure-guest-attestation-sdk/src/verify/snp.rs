@@ -7,7 +7,7 @@
 //! the report signature (ECDSA P-384 / SHA-384) under the VCEK public key.
 
 use super::{crypto, roots};
-use crate::tee_report::snp::SNP_REPORT_SIZE;
+use crate::tee_report::snp::{SnpReport, SNP_REPORT_SIZE};
 use openssl::hash::MessageDigest;
 use openssl::x509::{X509VerifyResult, X509};
 use std::io;
@@ -25,6 +25,20 @@ const SNP_SIG_COMPONENT_LEN: usize = 72;
 #[non_exhaustive]
 pub struct SnpVerifyPolicy {}
 
+/// Key measurements extracted from a verified SNP report.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct SnpMeasurements {
+    /// Launch measurement of the guest.
+    pub measurement: [u8; 48],
+    /// Report data (guest-provided).
+    pub report_data: [u8; 64],
+    /// Reported TCB version (AMD `TCB_VERSION`, little-endian u64).
+    pub reported_tcb: u64,
+    /// Chip identifier (0 if MaskChipId was set).
+    pub chip_id: [u8; 64],
+}
+
 /// Outcome of verifying an SNP report.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
@@ -33,6 +47,8 @@ pub struct SnpVerifyResult {
     pub chain_valid: bool,
     /// The report signature verified under the VCEK public key.
     pub signature_valid: bool,
+    /// The measurements extracted from the verified report.
+    pub measurements: SnpMeasurements,
 }
 
 /// Verify an AMD SEV-SNP attestation report against a VCEK certificate chain.
@@ -97,9 +113,20 @@ pub(crate) fn verify_snp_report_with_roots(
         return Err(io::Error::other("SNP report signature verification failed"));
     }
 
+    // Safety: length checked >= SNP_REPORT_SIZE above; read unaligned.
+    let report: SnpReport =
+        unsafe { core::ptr::read_unaligned(report_bytes.as_ptr() as *const SnpReport) };
+    let measurements = SnpMeasurements {
+        measurement: report.measurement,
+        report_data: report.report_data,
+        reported_tcb: report.reported_tcb,
+        chip_id: report.chip_id,
+    };
+
     Ok(SnpVerifyResult {
         chain_valid: true,
         signature_valid: true,
+        measurements,
     })
 }
 

@@ -12,8 +12,8 @@
 
 use super::{crypto, roots};
 use crate::tee_report::td_quote::{
-    parse_td_quote, TdQuoteCertification, TdQuoteEcdsaNestedCertification, TD_QUOTE_HEADER_V4_SIZE,
-    TD_QUOTE_HEADER_V5_SIZE,
+    parse_td_quote, TdQuoteBody, TdQuoteCertification, TdQuoteEcdsaNestedCertification,
+    TD_QUOTE_HEADER_V4_SIZE, TD_QUOTE_HEADER_V5_SIZE,
 };
 use openssl::hash::MessageDigest;
 use openssl::x509::{X509VerifyResult, X509};
@@ -57,6 +57,26 @@ fn strip_qgs_envelope(bytes: &[u8]) -> &[u8] {
 #[non_exhaustive]
 pub struct TdxVerifyPolicy {}
 
+/// Key TD measurements extracted from a verified quote body.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct TdxMeasurements {
+    /// Measurement of the initial TD contents.
+    pub mr_td: [u8; 48],
+    /// Measurement of the TDX module (SEAM).
+    pub mr_seam: [u8; 48],
+    /// Runtime extendable measurement registers 0..3.
+    pub rtmr: [[u8; 48]; 4],
+    /// Report data (guest-provided).
+    pub report_data: [u8; 64],
+    /// TEE TCB SVN.
+    pub tee_tcb_svn: [u8; 16],
+    /// TD attributes.
+    pub td_attributes: [u8; 8],
+    /// TD XFAM.
+    pub xfam: [u8; 8],
+}
+
 /// Outcome of verifying a TDX quote.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
@@ -69,6 +89,8 @@ pub struct TdxVerifyResult {
     pub qe_report_signature_valid: bool,
     /// The PCK certificate chain validated to the pinned Intel SGX Root CA.
     pub pck_chain_valid: bool,
+    /// The verified TD measurements from the quote body.
+    pub measurements: TdxMeasurements,
 }
 
 /// Verify an Intel TDX ECDSA attestation quote.
@@ -164,11 +186,28 @@ pub(crate) fn verify_td_quote_with_roots(
         return Err(io::Error::other("QE report signature is invalid"));
     }
 
+    // Extract the verified TD measurements from the quote body.
+    let base = match &parsed.body {
+        TdQuoteBody::Tdx10(b) => b,
+        TdQuoteBody::Tdx15(b) => &b.base,
+        _ => return Err(io::Error::other("unsupported TD quote body type")),
+    };
+    let measurements = TdxMeasurements {
+        mr_td: base.mr_td,
+        mr_seam: base.mr_seam,
+        rtmr: [base.rtmr0, base.rtmr1, base.rtmr2, base.rtmr3],
+        report_data: base.report_data,
+        tee_tcb_svn: base.tee_tcb_svn,
+        td_attributes: base.td_attributes,
+        xfam: base.xfam,
+    };
+
     Ok(TdxVerifyResult {
         quote_signature_valid: true,
         attestation_key_bound: true,
         qe_report_signature_valid: true,
         pck_chain_valid: true,
+        measurements,
     })
 }
 
@@ -188,6 +227,12 @@ mod tests {
         assert!(res.attestation_key_bound);
         assert!(res.qe_report_signature_valid);
         assert!(res.pck_chain_valid);
+        // Verified measurements match the known values for this quote.
+        assert_eq!(
+            hex::encode(res.measurements.mr_td),
+            "7ba9693cccf58775a97d78d21d06a33c29da53cb37773cffcc585c82deb00ed875246c661f26e673da1ebbcd683e9b36"
+        );
+        assert_eq!(hex::encode(res.measurements.xfam), "e718060000000000");
     }
 
     #[test]

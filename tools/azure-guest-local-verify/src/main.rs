@@ -60,24 +60,46 @@ mod imp {
         },
     }
 
+    /// A successful verification: the checks performed and the verified fields.
+    struct Report {
+        checks: Vec<(&'static str, bool)>,
+        fields: Vec<(&'static str, String)>,
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
     pub fn run() -> Result<()> {
         let cli = Cli::parse();
-        let (tee, result) = match &cli.command {
+        let (tee, result): (&str, Result<Report, std::io::Error>) = match &cli.command {
             Command::Tdx { quote } => {
                 let bytes =
                     std::fs::read(quote).with_context(|| format!("read {}", quote.display()))?;
-                let r = verify::verify_td_quote(&bytes, &verify::TdxVerifyPolicy::default());
-                (
-                    "tdx",
-                    r.map(|_| {
-                        vec![
-                            ("body signature", true),
-                            ("attestation-key binding", true),
-                            ("QE report signature", true),
-                            ("PCK chain -> Intel SGX Root CA", true),
-                        ]
-                    }),
-                )
+                let r =
+                    verify::verify_td_quote(&bytes, &verify::TdxVerifyPolicy::default()).map(|r| {
+                        Report {
+                            checks: vec![
+                                ("body signature", r.quote_signature_valid),
+                                ("attestation-key binding", r.attestation_key_bound),
+                                ("QE report signature", r.qe_report_signature_valid),
+                                ("PCK chain -> Intel SGX Root CA", r.pck_chain_valid),
+                            ],
+                            fields: vec![
+                                ("mr_td", hex(&r.measurements.mr_td)),
+                                ("mr_seam", hex(&r.measurements.mr_seam)),
+                                ("rtmr0", hex(&r.measurements.rtmr[0])),
+                                ("rtmr1", hex(&r.measurements.rtmr[1])),
+                                ("rtmr2", hex(&r.measurements.rtmr[2])),
+                                ("rtmr3", hex(&r.measurements.rtmr[3])),
+                                ("report_data", hex(&r.measurements.report_data)),
+                                ("tee_tcb_svn", hex(&r.measurements.tee_tcb_svn)),
+                                ("td_attributes", hex(&r.measurements.td_attributes)),
+                                ("xfam", hex(&r.measurements.xfam)),
+                            ],
+                        }
+                    });
+                ("tdx", r)
             }
             Command::Snp { report, vcek } => {
                 let rep =
@@ -85,16 +107,23 @@ mod imp {
                 let chain =
                     std::fs::read(vcek).with_context(|| format!("read {}", vcek.display()))?;
                 let r =
-                    verify::verify_snp_report(&rep, &chain, &verify::SnpVerifyPolicy::default());
-                (
-                    "snp",
-                    r.map(|_| {
-                        vec![
-                            ("VCEK chain -> AMD ARK root", true),
-                            ("report signature", true),
-                        ]
-                    }),
-                )
+                    verify::verify_snp_report(&rep, &chain, &verify::SnpVerifyPolicy::default())
+                        .map(|r| Report {
+                            checks: vec![
+                                ("VCEK chain -> AMD ARK root", r.chain_valid),
+                                ("report signature", r.signature_valid),
+                            ],
+                            fields: vec![
+                                ("measurement", hex(&r.measurements.measurement)),
+                                ("report_data", hex(&r.measurements.report_data)),
+                                (
+                                    "reported_tcb",
+                                    format!("{:016x}", r.measurements.reported_tcb),
+                                ),
+                                ("chip_id", hex(&r.measurements.chip_id)),
+                            ],
+                        });
+                ("snp", r)
             }
         };
 
@@ -107,16 +136,25 @@ mod imp {
         }
     }
 
-    fn emit(json: bool, tee: &str, result: &Result<Vec<(&str, bool)>, std::io::Error>) {
+    fn emit(json: bool, tee: &str, result: &Result<Report, std::io::Error>) {
         if json {
             match result {
-                Ok(checks) => {
-                    let checks_json = checks
+                Ok(rep) => {
+                    let checks = rep
+                        .checks
                         .iter()
                         .map(|(k, v)| format!("\"{k}\":{v}"))
                         .collect::<Vec<_>>()
                         .join(",");
-                    println!("{{\"tee\":\"{tee}\",\"passed\":true,\"checks\":{{{checks_json}}}}}");
+                    let fields = rep
+                        .fields
+                        .iter()
+                        .map(|(k, v)| format!("\"{k}\":\"{v}\""))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    println!(
+                        "{{\"tee\":\"{tee}\",\"passed\":true,\"checks\":{{{checks}}},\"measurements\":{{{fields}}}}}"
+                    );
                 }
                 Err(e) => {
                     let msg = e.to_string().replace('\\', "\\\\").replace('"', "\\\"");
@@ -126,10 +164,14 @@ mod imp {
             return;
         }
         match result {
-            Ok(checks) => {
+            Ok(rep) => {
                 println!("{} verification: PASSED", tee.to_uppercase());
-                for (k, _) in checks {
+                for (k, _) in &rep.checks {
                     println!("  {k}: ok");
+                }
+                println!("measurements:");
+                for (k, v) in &rep.fields {
+                    println!("  {k}: {v}");
                 }
             }
             Err(e) => {

@@ -21,5 +21,5 @@ mod roots;
 pub mod snp;
 pub mod tdx;
 
-pub use snp::{verify_snp_report, SnpVerifyPolicy, SnpVerifyResult};
-pub use tdx::{verify_td_quote, TdxVerifyPolicy, TdxVerifyResult};
+pub use snp::{verify_snp_report, SnpMeasurements, SnpVerifyPolicy, SnpVerifyResult};
+pub use tdx::{verify_td_quote, TdxMeasurements, TdxVerifyPolicy, TdxVerifyResult};
