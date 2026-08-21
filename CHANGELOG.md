@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Local (offline) attestation verification** behind a new `verify` feature
+  (requires the `native` backend; Linux/OpenSSL for now, Windows CNG+crypt32
+  pending). First slice: `verify::verify_snp_report()` validates an AMD SEV-SNP
+  report's VCEK certificate chain to a **pinned AMD ARK root** (Milan, Genoa)
+  and verifies the report signature (ECDSA P-384 / SHA-384). OpenSSL-backed
+  ECDSA (P-256 + P-384) and X.509 chain-validation primitives underpin it.
+
 ### Changed
 
 - **CLI `--json` `tcb` is derived from the MAA claims for SEV-SNP.** MAA reports

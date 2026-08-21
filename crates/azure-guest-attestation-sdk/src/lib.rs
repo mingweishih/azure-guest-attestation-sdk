@@ -59,6 +59,9 @@ pub mod report;
 /// TEE report parsing for SNP, TDX, and VBS attestation reports.
 pub mod tee_report;
 pub mod tpm;
+/// Local (offline) attestation verification (feature `verify`, requires `native`).
+#[cfg(feature = "verify")]
+pub mod verify;
 
 // ---- Re-exports: primary public API at crate root -------------------------
 pub use client::{
