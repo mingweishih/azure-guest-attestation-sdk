@@ -219,6 +219,35 @@ mod tests {
     /// roots at the Intel SGX Root CA. Public measurements, no secrets.
     const REAL_QUOTE: &[u8] = include_bytes!("testdata/migtd_tdx_quote.bin");
 
+    /// A real TDX v4 quote in **raw** form (no QGS `GetQuoteResponse`
+    /// envelope), from a different TD. Exercises the non-wrapped input path.
+    const RAW_QUOTE: &[u8] = include_bytes!("testdata/tdx_raw_quote.bin");
+
+    #[test]
+    fn verifies_real_raw_tdx_quote() {
+        let res = verify_td_quote(RAW_QUOTE, &TdxVerifyPolicy::default())
+            .expect("raw (non-QGS) TDX quote verifies against pinned Intel root");
+        assert!(res.quote_signature_valid);
+        assert!(res.attestation_key_bound);
+        assert!(res.qe_report_signature_valid);
+        assert!(res.pck_chain_valid);
+        let m = &res.measurements;
+        assert_eq!(
+            hex::encode(m.mr_td),
+            "a2e61f1316e9e367e9c1f7a0adc98c48eb13875c399c85d286cee5ea2b05e57f2df9f61d903b0ae7ac5607d843dfffc1"
+        );
+        assert_eq!(
+            hex::encode(m.mr_seam),
+            "489e585f1c54bc5a02066c8c6ec21619ff0334ec6f21e07e2a35202c59183789c8057e7d97dd591bb08314b185819e72"
+        );
+        // Distinct from the MigTD fixture: non-zero report_data and td_attributes.
+        assert_eq!(
+            hex::encode(&m.report_data[..32]),
+            "2fff2283e9c2aa6772880ce7a5f7080c3e25d77d976c6128ee43a61c35d6ffa1"
+        );
+        assert_eq!(hex::encode(m.td_attributes), "0000001000000000");
+    }
+
     #[test]
     fn verifies_real_tdx_quote_end_to_end() {
         let res = verify_td_quote(REAL_QUOTE, &TdxVerifyPolicy::default())

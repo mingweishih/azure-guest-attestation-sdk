@@ -283,8 +283,8 @@ mod tests {
     /// for the same report.
     #[test]
     fn verifies_real_turin_report() {
-        let report = include_bytes!("testdata/snp_report.bin");
-        let chain = include_bytes!("testdata/snp_vcek_chain.pem");
+        let report = include_bytes!("testdata/snp_report_turin.bin");
+        let chain = include_bytes!("testdata/snp_vcek_chain_turin.pem");
         let res = verify_snp_report(report, chain, &SnpVerifyPolicy::default())
             .expect("real SNP report verifies against pinned ARK-Turin");
         assert!(res.chain_valid);
@@ -303,6 +303,31 @@ mod tests {
         assert_eq!(hex(&m.chip_id[..8]), "5b0f3945c57a2338");
         // reported_tcb little-endian u64 == 0x5a0000_0005020301.
         assert_eq!(m.reported_tcb, 0x5a00_0000_0502_0301);
+    }
+
+    /// End-to-end against a real SEV-SNP report from an AMD **Milan** CVM (v3
+    /// report format), with a VCEK chain fetched from AMD KDS. Validates to the
+    /// *pinned* ARK-Milan root, exercising a different chip generation and
+    /// report version than the Turin case.
+    #[test]
+    fn verifies_real_milan_report() {
+        let report = include_bytes!("testdata/snp_report_milan.bin");
+        let chain = include_bytes!("testdata/snp_vcek_chain_milan.pem");
+        let res = verify_snp_report(report, chain, &SnpVerifyPolicy::default())
+            .expect("real SNP report verifies against pinned ARK-Milan");
+        assert!(res.chain_valid);
+        assert!(res.signature_valid);
+
+        let m = res.measurements;
+        assert_eq!(
+            hex(&m.measurement),
+            "5b0ce64ad1c1f6375dbda5f760b98526ca1bcf91b8195091afc28e7b024251d68fe32e05af34048d6607678cd23283ff"
+        );
+        assert_eq!(
+            hex(&m.report_data[..32]),
+            "758a38582cd731e63bc3d28d9b890ce82c8214afa0edab1196c5a7c7ff87396b"
+        );
+        assert_eq!(hex(&m.chip_id[..8]), "7dd2dd89d69087a1");
     }
 
     fn hex(b: &[u8]) -> String {
