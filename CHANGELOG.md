@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     report (`report_data`), the QE report signature (PCK), and the PCK
     certificate chain to a **pinned Intel SGX Root CA**. QGS `GET_QUOTE_RESP`
     envelopes (TDX QGS / MigTD) are unwrapped transparently.
+- **`azure-guest-local-verify` CLI** — a new tool that verifies attestation
+  evidence offline: `tdx <quote>` and `snp <report> --vcek <chain.pem>`, with
+  text or `--json` output and exit code 2 on failure. Linux-only (OpenSSL).
 
 ### Changed
 
