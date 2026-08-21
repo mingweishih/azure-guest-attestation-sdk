@@ -20,6 +20,13 @@ fn other<E: std::fmt::Display>(ctx: &str, e: E) -> io::Error {
     io::Error::other(format!("{ctx}: {e}"))
 }
 
+/// SHA-256 digest of `data`.
+pub(crate) fn sha256(data: &[u8]) -> io::Result<Vec<u8>> {
+    Ok(hash(MessageDigest::sha256(), data)
+        .map_err(|e| other("sha256", e))?
+        .to_vec())
+}
+
 /// Parse a buffer of one or more concatenated PEM certificates.
 pub(crate) fn parse_pem_chain(pem: &[u8]) -> io::Result<Vec<X509>> {
     X509::stack_from_pem(pem).map_err(|e| other("parse PEM cert chain", e))
@@ -45,6 +52,43 @@ pub(crate) fn ecdsa_verify_raw(
     let s = BigNum::from_slice(s_be).map_err(|e| other("ECDSA s", e))?;
     let sig = EcdsaSig::from_private_components(r, s).map_err(|e| other("ECDSA sig", e))?;
     let dgst = hash(digest, msg).map_err(|e| other("digest", e))?;
+    sig.verify(&dgst, &ec).map_err(|e| other("ECDSA verify", e))
+}
+
+/// Verify an ECDSA P-256/SHA-256 signature (raw big-endian `r`/`s`) over `msg`
+/// using a raw uncompressed public point `x_y` (64 bytes, big-endian `x‖y`).
+///
+/// TDX quotes carry the attestation key as a bare `x‖y` point (not a cert), so
+/// this builds the `EcKey` directly.
+pub(crate) fn ecdsa_p256_verify_point(
+    x_y: &[u8],
+    msg: &[u8],
+    r_be: &[u8],
+    s_be: &[u8],
+) -> io::Result<bool> {
+    use openssl::bn::BigNumContext;
+    use openssl::ec::{EcGroup, EcKey, EcPoint};
+    use openssl::nid::Nid;
+
+    if x_y.len() != 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("P-256 public point must be 64 bytes, got {}", x_y.len()),
+        ));
+    }
+    let group =
+        EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).map_err(|e| other("P-256 group", e))?;
+    let mut uncompressed = Vec::with_capacity(65);
+    uncompressed.push(0x04); // uncompressed point marker
+    uncompressed.extend_from_slice(x_y);
+    let mut ctx = BigNumContext::new().map_err(|e| other("bn context", e))?;
+    let point =
+        EcPoint::from_bytes(&group, &uncompressed, &mut ctx).map_err(|e| other("EC point", e))?;
+    let ec = EcKey::from_public_key(&group, &point).map_err(|e| other("EC public key", e))?;
+    let r = BigNum::from_slice(r_be).map_err(|e| other("ECDSA r", e))?;
+    let s = BigNum::from_slice(s_be).map_err(|e| other("ECDSA s", e))?;
+    let sig = EcdsaSig::from_private_components(r, s).map_err(|e| other("ECDSA sig", e))?;
+    let dgst = hash(MessageDigest::sha256(), msg).map_err(|e| other("sha256", e))?;
     sig.verify(&dgst, &ec).map_err(|e| other("ECDSA verify", e))
 }
 

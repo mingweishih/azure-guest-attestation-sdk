@@ -19,5 +19,7 @@ compile_error!(
 mod crypto;
 mod roots;
 pub mod snp;
+pub mod tdx;
 
 pub use snp::{verify_snp_report, SnpVerifyPolicy, SnpVerifyResult};
+pub use tdx::{verify_td_quote, TdxVerifyPolicy, TdxVerifyResult};

@@ -18,6 +18,10 @@ const ARK_MILAN_PEM: &str = include_str!("roots/ark-milan.pem");
 /// `4C:65:98:D1:9C:18:71:9C:5D:FD:4A:7D:33:5F:67:4E:5B:FE:1D:8F:80:0C:EA:2C:F2:70:C1:0D:10:3D:B2:F1`
 const ARK_GENOA_PEM: &str = include_str!("roots/ark-genoa.pem");
 
+/// Intel SGX Provisioning Certification Root CA. SHA-256 fingerprint:
+/// `44:A0:19:6B:2B:99:F8:89:B8:E1:49:E9:5B:80:7A:35:0E:74:24:96:43:99:E8:85:A7:CB:B8:CC:FA:B6:74:D3`
+const INTEL_SGX_ROOT_PEM: &str = include_str!("roots/intel-sgx-root.pem");
+
 /// Parse and return the pinned AMD ARK trust anchors (Milan, Genoa).
 pub(crate) fn amd_ark_roots() -> io::Result<Vec<X509>> {
     [ARK_MILAN_PEM, ARK_GENOA_PEM]
@@ -27,6 +31,12 @@ pub(crate) fn amd_ark_roots() -> io::Result<Vec<X509>> {
                 .map_err(|e| io::Error::other(format!("parse pinned ARK root: {e}")))
         })
         .collect()
+}
+
+/// Parse and return the pinned Intel SGX Root CA trust anchor.
+pub(crate) fn intel_sgx_root() -> io::Result<X509> {
+    X509::from_pem(INTEL_SGX_ROOT_PEM.as_bytes())
+        .map_err(|e| io::Error::other(format!("parse pinned Intel SGX root: {e}")))
 }
 
 #[cfg(test)]

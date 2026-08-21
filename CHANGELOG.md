@@ -11,10 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Local (offline) attestation verification** behind a new `verify` feature
   (requires the `native` backend; Linux/OpenSSL for now, Windows CNG+crypt32
-  pending). First slice: `verify::verify_snp_report()` validates an AMD SEV-SNP
-  report's VCEK certificate chain to a **pinned AMD ARK root** (Milan, Genoa)
-  and verifies the report signature (ECDSA P-384 / SHA-384). OpenSSL-backed
-  ECDSA (P-256 + P-384) and X.509 chain-validation primitives underpin it.
+  pending).
+  - `verify::verify_snp_report()` validates an AMD SEV-SNP report's VCEK chain
+    to a **pinned AMD ARK root** (Milan, Genoa) and verifies the report
+    signature (ECDSA P-384 / SHA-384).
+  - `verify::verify_td_quote()` validates an Intel TDX ECDSA quote end to end:
+    the body signature (ECDSA P-256), the attestation-key binding to the QE
+    report (`report_data`), the QE report signature (PCK), and the PCK
+    certificate chain to a **pinned Intel SGX Root CA**. QGS `GET_QUOTE_RESP`
+    envelopes (TDX QGS / MigTD) are unwrapped transparently.
 
 ### Changed
 
