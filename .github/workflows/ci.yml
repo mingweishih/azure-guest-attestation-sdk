@@ -91,6 +91,27 @@ jobs:
       - run: cargo test --workspace
 
   # --------------------------------------------------------------------------
+  # Offline verifier (`verify` feature — Linux/OpenSSL only, skipped on
+  # doc-only changes). The default CI jobs never build this path, so lint +
+  # test it explicitly here.
+  # --------------------------------------------------------------------------
+  verify:
+    name: Verify feature (ubuntu-latest)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p azure-guest-attestation-sdk --no-default-features --features verify --all-targets -- -D warnings
+      - run: cargo clippy -p azure-guest-local-verify --all-targets -- -D warnings
+      - run: cargo test -p azure-guest-attestation-sdk --no-default-features --features verify
+      - run: cargo build -p azure-guest-local-verify
+
+  # --------------------------------------------------------------------------
   # vTPM integration tests (skipped on doc-only changes)
   # --------------------------------------------------------------------------
   vtpm-tests:
