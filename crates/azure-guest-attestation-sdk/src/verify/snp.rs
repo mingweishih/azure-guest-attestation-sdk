@@ -276,4 +276,36 @@ mod tests {
         );
         assert!(err.is_err());
     }
+
+    /// End-to-end against a real SEV-SNP report + VCEK chain captured from an
+    /// Azure CVM (AMD Turin). Validates to the *pinned* production ARK-Turin
+    /// root and asserts the extracted measurements match the MAA token issued
+    /// for the same report.
+    #[test]
+    fn verifies_real_turin_report() {
+        let report = include_bytes!("testdata/snp_report.bin");
+        let chain = include_bytes!("testdata/snp_vcek_chain.pem");
+        let res = verify_snp_report(report, chain, &SnpVerifyPolicy::default())
+            .expect("real SNP report verifies against pinned ARK-Turin");
+        assert!(res.chain_valid);
+        assert!(res.signature_valid);
+
+        let m = res.measurements;
+        assert_eq!(
+            hex(&m.measurement),
+            "12d40f252f43d99d78b15197400e266bd6b323c93d8fdfb61ccf2f30761d8708bc2f4b6dbcb8d3d769cd535c695938ab"
+        );
+        assert_eq!(
+            hex(&m.report_data[..32]),
+            "ab6a63f751fbf354f2bb6a3c12336e18caa1217c3d3b2cdcf57ffe2c21f69088"
+        );
+        // chip_id low 8 bytes == MAA x-ms-sevsnpvm-chipid.
+        assert_eq!(hex(&m.chip_id[..8]), "5b0f3945c57a2338");
+        // reported_tcb little-endian u64 == 0x5a0000_0005020301.
+        assert_eq!(m.reported_tcb, 0x5a00_0000_0502_0301);
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
 }

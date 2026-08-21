@@ -18,13 +18,17 @@ const ARK_MILAN_PEM: &str = include_str!("roots/ark-milan.pem");
 /// `4C:65:98:D1:9C:18:71:9C:5D:FD:4A:7D:33:5F:67:4E:5B:FE:1D:8F:80:0C:EA:2C:F2:70:C1:0D:10:3D:B2:F1`
 const ARK_GENOA_PEM: &str = include_str!("roots/ark-genoa.pem");
 
+/// ARK-Turin root. SHA-256 fingerprint:
+/// `1F:08:41:61:A4:4B:B6:D9:37:78:A9:04:87:7D:48:19:CA:FA:5D:05:EF:41:93:B2:DE:D9:DD:9C:73:DD:3F:6A`
+const ARK_TURIN_PEM: &str = include_str!("roots/ark-turin.pem");
+
 /// Intel SGX Provisioning Certification Root CA. SHA-256 fingerprint:
 /// `44:A0:19:6B:2B:99:F8:89:B8:E1:49:E9:5B:80:7A:35:0E:74:24:96:43:99:E8:85:A7:CB:B8:CC:FA:B6:74:D3`
 const INTEL_SGX_ROOT_PEM: &str = include_str!("roots/intel-sgx-root.pem");
 
-/// Parse and return the pinned AMD ARK trust anchors (Milan, Genoa).
+/// Parse and return the pinned AMD ARK trust anchors (Milan, Genoa, Turin).
 pub(crate) fn amd_ark_roots() -> io::Result<Vec<X509>> {
-    [ARK_MILAN_PEM, ARK_GENOA_PEM]
+    [ARK_MILAN_PEM, ARK_GENOA_PEM, ARK_TURIN_PEM]
         .iter()
         .map(|pem| {
             X509::from_pem(pem.as_bytes())
@@ -46,7 +50,7 @@ mod tests {
     #[test]
     fn pinned_ark_roots_parse_and_are_self_signed() {
         let roots = amd_ark_roots().expect("ARK roots parse");
-        assert_eq!(roots.len(), 2);
+        assert_eq!(roots.len(), 3);
         for root in &roots {
             // Each ARK is a self-signed root.
             assert_eq!(root.issued(root), openssl::x509::X509VerifyResult::OK);

@@ -77,6 +77,8 @@ Desktop.ini
 *.pfx
 # Pinned trust anchors for the offline verifier are checked in on purpose.
 !crates/azure-guest-attestation-sdk/src/verify/roots/*.pem
+# Real attestation-evidence collateral (VCEK chains) for verifier tests.
+!crates/azure-guest-attestation-sdk/src/verify/testdata/*.pem
 
 # =============================================================================
 # Build and Test Outputs
