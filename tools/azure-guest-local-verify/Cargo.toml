@@ -13,10 +13,10 @@ rust-version.workspace = true
 anyhow.workspace = true
 
 # Local verification requires the SDK `verify` feature, which implies the
-# `native` (OpenSSL) backend and is currently Linux-only. Gate the dependency to
-# Linux so `cargo build --workspace` stays green on other platforms; the binary
-# reports "Linux only" elsewhere.
-[target.'cfg(target_os = "linux")'.dependencies]
+# `native` backend: OpenSSL on Linux, CNG/crypt32 on Windows. Gate the
+# dependency to those platforms so `cargo build --workspace` stays green
+# elsewhere; the binary reports "unsupported platform" there.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 azure-guest-attestation-sdk = { path = "../../crates/azure-guest-attestation-sdk", version = "0.1.0", default-features = false, features = ["verify"] }
 clap.workspace = true
 

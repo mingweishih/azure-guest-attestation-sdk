@@ -91,15 +91,19 @@ jobs:
       - run: cargo test --workspace
 
   # --------------------------------------------------------------------------
-  # Offline verifier (`verify` feature — Linux/OpenSSL only, skipped on
-  # doc-only changes). The default CI jobs never build this path, so lint +
-  # test it explicitly here.
+  # Offline verifier (`verify` feature — OpenSSL on Linux, CNG/crypt32 on
+  # Windows; skipped on doc-only changes). The default CI jobs never build this
+  # path, so lint + test it explicitly here.
   # --------------------------------------------------------------------------
   verify:
-    name: Verify feature (ubuntu-latest)
+    name: Verify feature (${{ matrix.os }})
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

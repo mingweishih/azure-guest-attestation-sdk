@@ -8,13 +8,11 @@
 //! verification of the report/quote.
 //!
 //! Gated behind the `verify` feature, which requires the `native` crypto
-//! backend. Currently Linux-only (system OpenSSL); Windows (CNG + crypt32)
-//! support is pending.
+//! backend: system OpenSSL on Linux, CNG (BCrypt) + CryptoAPI (crypt32) on
+//! Windows.
 
-#[cfg(not(target_os = "linux"))]
-compile_error!(
-    "the `verify` feature currently requires Linux (OpenSSL); Windows (CNG/crypt32) support is pending"
-);
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+compile_error!("the `verify` feature requires Linux (OpenSSL) or Windows (CNG/crypt32)");
 
 mod crypto;
 mod roots;

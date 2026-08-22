@@ -7,7 +7,7 @@
 //! the root — rather than trusting whatever root a caller supplies — is what
 //! anchors SEV-SNP verification to AMD.
 
-use openssl::x509::X509;
+use super::crypto::{cert_from_pem, Cert};
 use std::io;
 
 /// ARK-Milan root. SHA-256 fingerprint:
@@ -27,19 +27,19 @@ const ARK_TURIN_PEM: &str = include_str!("roots/ark-turin.pem");
 const INTEL_SGX_ROOT_PEM: &str = include_str!("roots/intel-sgx-root.pem");
 
 /// Parse and return the pinned AMD ARK trust anchors (Milan, Genoa, Turin).
-pub(crate) fn amd_ark_roots() -> io::Result<Vec<X509>> {
+pub(crate) fn amd_ark_roots() -> io::Result<Vec<Cert>> {
     [ARK_MILAN_PEM, ARK_GENOA_PEM, ARK_TURIN_PEM]
         .iter()
         .map(|pem| {
-            X509::from_pem(pem.as_bytes())
+            cert_from_pem(pem.as_bytes())
                 .map_err(|e| io::Error::other(format!("parse pinned ARK root: {e}")))
         })
         .collect()
 }
 
 /// Parse and return the pinned Intel SGX Root CA trust anchor.
-pub(crate) fn intel_sgx_root() -> io::Result<X509> {
-    X509::from_pem(INTEL_SGX_ROOT_PEM.as_bytes())
+pub(crate) fn intel_sgx_root() -> io::Result<Cert> {
+    cert_from_pem(INTEL_SGX_ROOT_PEM.as_bytes())
         .map_err(|e| io::Error::other(format!("parse pinned Intel SGX root: {e}")))
 }
 
@@ -53,7 +53,13 @@ mod tests {
         assert_eq!(roots.len(), 3);
         for root in &roots {
             // Each ARK is a self-signed root.
-            assert_eq!(root.issued(root), openssl::x509::X509VerifyResult::OK);
+            assert!(super::super::crypto::cert_is_self_signed(root));
         }
+    }
+
+    #[test]
+    fn pinned_intel_root_parses_and_is_self_signed() {
+        let root = intel_sgx_root().expect("Intel SGX root parses");
+        assert!(super::super::crypto::cert_is_self_signed(&root));
     }
 }

@@ -10,8 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Local (offline) attestation verification** behind a new `verify` feature
-  (requires the `native` backend; Linux/OpenSSL for now, Windows CNG+crypt32
-  pending).
+  (requires the `native` backend: OpenSSL on Linux, CNG + crypt32 on Windows).
   - `verify::verify_snp_report()` validates an AMD SEV-SNP report's VCEK chain
     to a **pinned AMD ARK root** (Milan, Genoa) and verifies the report
     signature (ECDSA P-384 / SHA-384).
@@ -22,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     envelopes (TDX QGS / MigTD) are unwrapped transparently.
 - **`azure-guest-local-verify` CLI** — a new tool that verifies attestation
   evidence offline: `tdx <quote>` and `snp <report> --vcek <chain.pem>`, with
-  text or `--json` output and exit code 2 on failure. Linux-only (OpenSSL).
+  text or `--json` output and exit code 2 on failure. Linux and Windows.
 
 ### Changed
 

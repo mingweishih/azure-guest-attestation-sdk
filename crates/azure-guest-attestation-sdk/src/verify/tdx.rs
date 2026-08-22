@@ -10,13 +10,12 @@
 //!
 //! All ECDSA components in a TDX quote are big-endian (unlike SEV-SNP).
 
-use super::{crypto, roots};
+use super::crypto::{self, Cert, DigestAlg};
+use super::roots;
 use crate::tee_report::td_quote::{
     parse_td_quote, TdQuoteBody, TdQuoteCertification, TdQuoteEcdsaNestedCertification,
     TD_QUOTE_HEADER_V4_SIZE, TD_QUOTE_HEADER_V5_SIZE,
 };
-use openssl::hash::MessageDigest;
-use openssl::x509::{X509VerifyResult, X509};
 use std::io;
 
 /// Offset of `report_data` within a 384-byte SGX report body.
@@ -111,7 +110,7 @@ pub fn verify_td_quote(
 /// testing; production callers use [`verify_td_quote`].
 pub(crate) fn verify_td_quote_with_roots(
     quote_bytes: &[u8],
-    roots: &[X509],
+    roots: &[Cert],
     _policy: &TdxVerifyPolicy,
 ) -> io::Result<TdxVerifyResult> {
     // Unwrap any QGS envelope so the signed byte range matches the parse.
@@ -173,16 +172,16 @@ pub(crate) fn verify_td_quote_with_roots(
     let (pck_leaf, rest) = chain
         .split_first()
         .ok_or_else(|| io::Error::other("empty PCK certificate chain"))?;
-    let intermediates: Vec<X509> = rest
+    let intermediates: Vec<Cert> = rest
         .iter()
-        .filter(|c| c.issued(c) != X509VerifyResult::OK)
+        .filter(|c| !crypto::cert_is_self_signed(c))
         .cloned()
         .collect();
     crypto::verify_cert_chain(pck_leaf, &intermediates, roots)?;
 
     // 2c. QE report signature by the PCK leaf.
     let (qr, qs) = ecdsa.qe_report_signature.split_at(32);
-    if !crypto::ecdsa_verify_raw(pck_leaf, MessageDigest::sha256(), &ecdsa.qe_report, qr, qs)? {
+    if !crypto::ecdsa_verify_raw(pck_leaf, DigestAlg::Sha256, &ecdsa.qe_report, qr, qs)? {
         return Err(io::Error::other("QE report signature is invalid"));
     }
 

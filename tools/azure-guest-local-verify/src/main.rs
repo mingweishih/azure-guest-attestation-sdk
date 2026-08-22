@@ -5,22 +5,21 @@
 //! evidence (Intel TDX quotes, AMD SEV-SNP reports) against pinned hardware
 //! roots, without a round-trip to MAA.
 //!
-//! Verification is OpenSSL-backed and currently Linux-only.
+//! Verification uses the platform crypto backend: OpenSSL on Linux, CNG +
+//! crypt32 on Windows.
 
 fn main() -> anyhow::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
         imp::run()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
-        anyhow::bail!(
-            "azure-guest-local-verify currently supports Linux only (OpenSSL-backed verification)"
-        )
+        anyhow::bail!("azure-guest-local-verify supports Linux and Windows only")
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod imp {
     use anyhow::{Context, Result};
     use azure_guest_attestation_sdk::verify;

@@ -6,10 +6,9 @@
 //! Validates the VCEK certificate chain to a pinned AMD ARK root and verifies
 //! the report signature (ECDSA P-384 / SHA-384) under the VCEK public key.
 
-use super::{crypto, roots};
+use super::crypto::{self, Cert, DigestAlg};
+use super::roots;
 use crate::tee_report::snp::{SnpReport, SNP_REPORT_SIZE};
-use openssl::hash::MessageDigest;
-use openssl::x509::{X509VerifyResult, X509};
 use std::io;
 
 /// Number of leading report bytes covered by the signature (everything before
@@ -74,7 +73,7 @@ pub fn verify_snp_report(
 pub(crate) fn verify_snp_report_with_roots(
     report_bytes: &[u8],
     vcek_chain_pem: &[u8],
-    roots: &[X509],
+    roots: &[Cert],
     _policy: &SnpVerifyPolicy,
 ) -> io::Result<SnpVerifyResult> {
     if report_bytes.len() < SNP_REPORT_SIZE {
@@ -95,9 +94,9 @@ pub(crate) fn verify_snp_report_with_roots(
 
     // 2. Validate VCEK -> ASK -> pinned ARK. Drop any self-signed cert from the
     //    supplied intermediates so trust is anchored only on the pinned roots.
-    let intermediates: Vec<X509> = rest
+    let intermediates: Vec<Cert> = rest
         .iter()
-        .filter(|c| c.issued(c) != X509VerifyResult::OK)
+        .filter(|c| !crypto::cert_is_self_signed(c))
         .cloned()
         .collect();
     crypto::verify_cert_chain(vcek, &intermediates, roots)?;
@@ -107,8 +106,7 @@ pub(crate) fn verify_snp_report_with_roots(
     let sig = &report_bytes[SNP_SIGNED_LEN..SNP_SIGNED_LEN + 512];
     let r_be = le_to_be(&sig[..SNP_SIG_COMPONENT_LEN]);
     let s_be = le_to_be(&sig[SNP_SIG_COMPONENT_LEN..2 * SNP_SIG_COMPONENT_LEN]);
-    let signature_valid =
-        crypto::ecdsa_verify_raw(vcek, MessageDigest::sha384(), signed, &r_be, &s_be)?;
+    let signature_valid = crypto::ecdsa_verify_raw(vcek, DigestAlg::Sha384, signed, &r_be, &s_be)?;
     if !signature_valid {
         return Err(io::Error::other("SNP report signature verification failed"));
     }
@@ -130,7 +128,8 @@ pub(crate) fn verify_snp_report_with_roots(
     })
 }
 
-/// Reverse a little-endian integer buffer to big-endian (as OpenSSL expects).
+/// Reverse a little-endian integer buffer to the big-endian form the crypto
+/// backends expect.
 fn le_to_be(le: &[u8]) -> Vec<u8> {
     let mut v = le.to_vec();
     v.reverse();
@@ -140,141 +139,185 @@ fn le_to_be(le: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openssl::asn1::Asn1Time;
-    use openssl::ec::{EcGroup, EcKey};
-    use openssl::ecdsa::EcdsaSig;
-    use openssl::hash::hash;
-    use openssl::nid::Nid;
-    use openssl::pkey::{PKey, Private};
-    use openssl::x509::extension::BasicConstraints;
-    use openssl::x509::{X509Builder, X509NameBuilder};
 
-    fn p384_key() -> PKey<Private> {
-        let group = EcGroup::from_curve_name(Nid::SECP384R1).unwrap();
-        PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap()
-    }
+    /// Real SEV-SNP evidence captured from Azure CVMs. Public measurements, no
+    /// secrets — these are the ground truth for both crypto backends.
+    const TURIN_REPORT: &[u8] = include_bytes!("testdata/snp_report_turin.bin");
+    const TURIN_CHAIN: &[u8] = include_bytes!("testdata/snp_vcek_chain_turin.pem");
+    const MILAN_REPORT: &[u8] = include_bytes!("testdata/snp_report_milan.bin");
+    const MILAN_CHAIN: &[u8] = include_bytes!("testdata/snp_vcek_chain_milan.pem");
 
-    fn cert(
-        cn: &str,
-        subject_key: &PKey<Private>,
-        issuer_cn: &str,
-        issuer_key: &PKey<Private>,
-        ca: bool,
-    ) -> X509 {
-        let mut sn = X509NameBuilder::new().unwrap();
-        sn.append_entry_by_text("CN", cn).unwrap();
-        let sn = sn.build();
-        let mut inb = X509NameBuilder::new().unwrap();
-        inb.append_entry_by_text("CN", issuer_cn).unwrap();
-        let inb = inb.build();
-        let mut b = X509Builder::new().unwrap();
-        b.set_pubkey(subject_key).unwrap();
-        b.set_subject_name(&sn).unwrap();
-        b.set_issuer_name(&inb).unwrap();
-        b.set_not_before(&Asn1Time::days_from_now(0).unwrap())
-            .unwrap();
-        b.set_not_after(&Asn1Time::days_from_now(1).unwrap())
-            .unwrap();
-        if ca {
-            b.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
-                .unwrap();
+    /// Synthetic ARK->ASK->VCEK fixtures. Key/cert generation is OpenSSL-only;
+    /// the Windows backend's negative coverage comes from the real-evidence
+    /// tamper tests below.
+    #[cfg(target_os = "linux")]
+    mod synthetic {
+        use super::*;
+        use openssl::asn1::Asn1Time;
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::ecdsa::EcdsaSig;
+        use openssl::hash::{hash, MessageDigest};
+        use openssl::nid::Nid;
+        use openssl::pkey::{PKey, Private};
+        use openssl::x509::extension::BasicConstraints;
+        use openssl::x509::{X509Builder, X509NameBuilder, X509};
+
+        fn p384_key() -> PKey<Private> {
+            let group = EcGroup::from_curve_name(Nid::SECP384R1).unwrap();
+            PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap()
         }
-        b.sign(issuer_key, MessageDigest::sha384()).unwrap();
-        b.build()
-    }
 
-    /// Build a synthetic ARK->ASK->VCEK chain mirroring AMD's structure and a
-    /// report signed by the VCEK key, then exercise the full verify path.
-    fn synthetic_case() -> (Vec<u8>, Vec<u8>, X509, PKey<Private>) {
-        let ark_key = p384_key();
-        let ask_key = p384_key();
-        let vcek_key = p384_key();
+        fn cert(
+            cn: &str,
+            subject_key: &PKey<Private>,
+            issuer_cn: &str,
+            issuer_key: &PKey<Private>,
+            ca: bool,
+        ) -> X509 {
+            let mut sn = X509NameBuilder::new().unwrap();
+            sn.append_entry_by_text("CN", cn).unwrap();
+            let sn = sn.build();
+            let mut inb = X509NameBuilder::new().unwrap();
+            inb.append_entry_by_text("CN", issuer_cn).unwrap();
+            let inb = inb.build();
+            let mut b = X509Builder::new().unwrap();
+            b.set_pubkey(subject_key).unwrap();
+            b.set_subject_name(&sn).unwrap();
+            b.set_issuer_name(&inb).unwrap();
+            b.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+                .unwrap();
+            b.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+                .unwrap();
+            if ca {
+                b.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+                    .unwrap();
+            }
+            b.sign(issuer_key, MessageDigest::sha384()).unwrap();
+            b.build()
+        }
 
-        let ark = cert("ARK-Test", &ark_key, "ARK-Test", &ark_key, true);
-        let ask = cert("SEV-Test", &ask_key, "ARK-Test", &ark_key, true);
-        let vcek = cert("VCEK-Test", &vcek_key, "SEV-Test", &ask_key, false);
+        fn as_cert(x: &X509) -> Cert {
+            crypto::cert_from_pem(&x.to_pem().unwrap()).unwrap()
+        }
 
-        // Chain PEM: VCEK then ASK (ARK is the pinned root, supplied separately).
-        let mut chain_pem = vcek.to_pem().unwrap();
-        chain_pem.extend_from_slice(&ask.to_pem().unwrap());
+        /// Build a synthetic ARK->ASK->VCEK chain mirroring AMD's structure and
+        /// a report signed by the VCEK key, then exercise the full verify path.
+        fn synthetic_case() -> (Vec<u8>, Vec<u8>, Cert) {
+            let ark_key = p384_key();
+            let ask_key = p384_key();
+            let vcek_key = p384_key();
 
-        // Report: 0x4a0 bytes; sign SHA-384 of [0..0x2A0] with the VCEK key.
-        let mut report = vec![0u8; SNP_REPORT_SIZE];
-        report[..SNP_SIGNED_LEN]
-            .iter_mut()
-            .enumerate()
-            .for_each(|(i, b)| *b = (i % 251) as u8);
-        let dgst = hash(MessageDigest::sha384(), &report[..SNP_SIGNED_LEN]).unwrap();
-        let ec = vcek_key.ec_key().unwrap();
-        let sig = EcdsaSig::sign(&dgst, &ec).unwrap();
-        place_le(&mut report, SNP_SIGNED_LEN, &sig.r().to_vec());
-        place_le(
-            &mut report,
-            SNP_SIGNED_LEN + SNP_SIG_COMPONENT_LEN,
-            &sig.s().to_vec(),
-        );
+            let ark = cert("ARK-Test", &ark_key, "ARK-Test", &ark_key, true);
+            let ask = cert("SEV-Test", &ask_key, "ARK-Test", &ark_key, true);
+            let vcek = cert("VCEK-Test", &vcek_key, "SEV-Test", &ask_key, false);
 
-        (report, chain_pem, ark, vcek_key)
-    }
+            // Chain PEM: VCEK then ASK (ARK is the pinned root, supplied separately).
+            let mut chain_pem = vcek.to_pem().unwrap();
+            chain_pem.extend_from_slice(&ask.to_pem().unwrap());
 
-    /// Store a big-endian integer as a 72-byte little-endian component at `off`.
-    fn place_le(report: &mut [u8], off: usize, be: &[u8]) {
-        let mut le = be.to_vec();
-        le.reverse();
-        le.resize(SNP_SIG_COMPONENT_LEN, 0);
-        report[off..off + SNP_SIG_COMPONENT_LEN].copy_from_slice(&le);
-    }
+            // Report: 0x4a0 bytes; sign SHA-384 of [0..0x2A0] with the VCEK key.
+            let mut report = vec![0u8; SNP_REPORT_SIZE];
+            report[..SNP_SIGNED_LEN]
+                .iter_mut()
+                .enumerate()
+                .for_each(|(i, b)| *b = (i % 251) as u8);
+            let dgst = hash(MessageDigest::sha384(), &report[..SNP_SIGNED_LEN]).unwrap();
+            let ec = vcek_key.ec_key().unwrap();
+            let sig = EcdsaSig::sign(&dgst, &ec).unwrap();
+            place_le(&mut report, SNP_SIGNED_LEN, &sig.r().to_vec());
+            place_le(
+                &mut report,
+                SNP_SIGNED_LEN + SNP_SIG_COMPONENT_LEN,
+                &sig.s().to_vec(),
+            );
 
-    #[test]
-    fn verifies_valid_synthetic_report_and_chain() {
-        let (report, chain_pem, ark, _) = synthetic_case();
-        let res = verify_snp_report_with_roots(
-            &report,
-            &chain_pem,
-            std::slice::from_ref(&ark),
-            &SnpVerifyPolicy::default(),
-        )
-        .expect("verify ok");
-        assert!(res.chain_valid && res.signature_valid);
-    }
+            (report, chain_pem, as_cert(&ark))
+        }
 
-    #[test]
-    fn rejects_tampered_report_body() {
-        let (mut report, chain_pem, ark, _) = synthetic_case();
-        report[0] ^= 0xff; // change a signed byte
-        let err = verify_snp_report_with_roots(
-            &report,
-            &chain_pem,
-            std::slice::from_ref(&ark),
-            &SnpVerifyPolicy::default(),
-        );
-        assert!(err.is_err());
-    }
+        /// Store a big-endian integer as a 72-byte little-endian component at `off`.
+        fn place_le(report: &mut [u8], off: usize, be: &[u8]) {
+            let mut le = be.to_vec();
+            le.reverse();
+            le.resize(SNP_SIG_COMPONENT_LEN, 0);
+            report[off..off + SNP_SIG_COMPONENT_LEN].copy_from_slice(&le);
+        }
 
-    #[test]
-    fn rejects_untrusted_root() {
-        let (report, chain_pem, _ark, _) = synthetic_case();
-        // A different, unrelated ARK is not a trust anchor for this chain.
-        let other = cert("ARK-Other", &p384_key(), "ARK-Other", &p384_key(), true);
-        let err = verify_snp_report_with_roots(
-            &report,
-            &chain_pem,
-            std::slice::from_ref(&other),
-            &SnpVerifyPolicy::default(),
-        );
-        assert!(err.is_err());
+        #[test]
+        fn verifies_valid_synthetic_report_and_chain() {
+            let (report, chain_pem, ark) = synthetic_case();
+            let res = verify_snp_report_with_roots(
+                &report,
+                &chain_pem,
+                std::slice::from_ref(&ark),
+                &SnpVerifyPolicy::default(),
+            )
+            .expect("verify ok");
+            assert!(res.chain_valid && res.signature_valid);
+        }
+
+        #[test]
+        fn rejects_tampered_report_body() {
+            let (mut report, chain_pem, ark) = synthetic_case();
+            report[0] ^= 0xff; // change a signed byte
+            let err = verify_snp_report_with_roots(
+                &report,
+                &chain_pem,
+                std::slice::from_ref(&ark),
+                &SnpVerifyPolicy::default(),
+            );
+            assert!(err.is_err());
+        }
+
+        #[test]
+        fn rejects_untrusted_root() {
+            let (report, chain_pem, _ark) = synthetic_case();
+            // A different, unrelated ARK is not a trust anchor for this chain.
+            let other = as_cert(&cert(
+                "ARK-Other",
+                &p384_key(),
+                "ARK-Other",
+                &p384_key(),
+                true,
+            ));
+            let err = verify_snp_report_with_roots(
+                &report,
+                &chain_pem,
+                std::slice::from_ref(&other),
+                &SnpVerifyPolicy::default(),
+            );
+            assert!(err.is_err());
+        }
     }
 
     #[test]
     fn rejects_short_report() {
-        let (_r, chain_pem, ark, _) = synthetic_case();
-        let err = verify_snp_report_with_roots(
-            &[0u8; 16],
-            &chain_pem,
-            std::slice::from_ref(&ark),
+        assert!(verify_snp_report(&[0u8; 16], TURIN_CHAIN, &SnpVerifyPolicy::default()).is_err());
+    }
+
+    #[test]
+    fn rejects_tampered_real_report_body() {
+        let mut report = TURIN_REPORT.to_vec();
+        report[0x10] ^= 0xff; // a byte inside the signed range
+        assert!(verify_snp_report(&report, TURIN_CHAIN, &SnpVerifyPolicy::default()).is_err());
+    }
+
+    #[test]
+    fn rejects_real_chain_under_untrusted_root() {
+        // The VCEK chain does not root at the Intel SGX Root CA.
+        let intel = roots::intel_sgx_root().unwrap();
+        assert!(verify_snp_report_with_roots(
+            TURIN_REPORT,
+            TURIN_CHAIN,
+            std::slice::from_ref(&intel),
             &SnpVerifyPolicy::default(),
-        );
-        assert!(err.is_err());
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_mismatched_report_and_chain() {
+        // Milan report signed by the Milan VCEK, presented with the Turin chain.
+        assert!(verify_snp_report(MILAN_REPORT, TURIN_CHAIN, &SnpVerifyPolicy::default()).is_err());
     }
 
     /// End-to-end against a real SEV-SNP report + VCEK chain captured from an
@@ -283,9 +326,7 @@ mod tests {
     /// for the same report.
     #[test]
     fn verifies_real_turin_report() {
-        let report = include_bytes!("testdata/snp_report_turin.bin");
-        let chain = include_bytes!("testdata/snp_vcek_chain_turin.pem");
-        let res = verify_snp_report(report, chain, &SnpVerifyPolicy::default())
+        let res = verify_snp_report(TURIN_REPORT, TURIN_CHAIN, &SnpVerifyPolicy::default())
             .expect("real SNP report verifies against pinned ARK-Turin");
         assert!(res.chain_valid);
         assert!(res.signature_valid);
@@ -311,9 +352,7 @@ mod tests {
     /// report version than the Turin case.
     #[test]
     fn verifies_real_milan_report() {
-        let report = include_bytes!("testdata/snp_report_milan.bin");
-        let chain = include_bytes!("testdata/snp_vcek_chain_milan.pem");
-        let res = verify_snp_report(report, chain, &SnpVerifyPolicy::default())
+        let res = verify_snp_report(MILAN_REPORT, MILAN_CHAIN, &SnpVerifyPolicy::default())
             .expect("real SNP report verifies against pinned ARK-Milan");
         assert!(res.chain_valid);
         assert!(res.signature_valid);
