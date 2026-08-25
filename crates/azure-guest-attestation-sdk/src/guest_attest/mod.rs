@@ -418,7 +418,10 @@ pub fn build_tee_only_payload_from_evidence(
 ) -> io::Result<(String, crate::report::CvmReportType)> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let rtype = evidence.report_type;
-    let runtime_data = Vec::new();
+    // The raw runtime-claims bytes, verbatim. MAA re-hashes these and compares
+    // against the TEE report's `report_data`, so they must be the exact bytes
+    // the platform emitted — never a re-serialization of the parsed claims.
+    let runtime_data = evidence.runtime_data.clone();
     let (evidence_field, evidence_bytes) = match rtype {
         crate::report::CvmReportType::SnpVmReport => {
             let vcek_chain = match endorsement {
@@ -464,12 +467,19 @@ pub fn build_tee_only_payload_from_evidence(
 /// **Note:** prefer [`build_tee_only_payload_from_evidence`] which works from
 /// pre-collected [`CvmEvidence`](crate::client::CvmEvidence) and avoids
 /// duplicating evidence collection.
-pub fn build_tee_only_payload(tpm: &Tpm) -> io::Result<(String, crate::report::CvmReportType)> {
+pub fn build_tee_only_payload(
+    tpm: &Tpm,
+    user_data: Option<&[u8]>,
+) -> io::Result<(String, crate::report::CvmReportType)> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let raw = crate::tpm::attestation::get_cvm_report_raw(tpm, None)?;
+    let raw = crate::tpm::attestation::get_cvm_report_raw(tpm, user_data)?;
     let (parsed, _claims) = crate::report::CvmAttestationReport::parse_with_runtime_claims(&raw)?;
     let rtype = parsed.runtime_claims_header.report_type;
-    let runtime_data = Vec::new();
+    // Verbatim runtime-claims bytes — see the note in
+    // build_tee_only_payload_from_evidence().
+    let runtime_data = parsed
+        .get_runtime_claims_raw_bytes(&raw)
+        .unwrap_or_default();
     let (evidence_field, evidence_bytes) = match rtype {
         crate::report::CvmReportType::SnpVmReport => {
             let snp_slice = &parsed.tee_report[..crate::report::SNP_VM_REPORT_SIZE];
@@ -510,10 +520,11 @@ pub fn tee_only_attest_platform(
     tpm: &Tpm,
     endpoint: &str,
     force_override: Option<crate::report::CvmReportType>,
+    user_data: Option<&[u8]>,
 ) -> io::Result<(String, String)> {
     let mut timer = StageTimer::new();
     tracing::info!(target: "guest_attest", endpoint, "tee-only attestation start");
-    let (payload, detected_type) = build_tee_only_payload(tpm)?;
+    let (payload, detected_type) = build_tee_only_payload(tpm, user_data)?;
     timer.mark("build_payload");
     let eff_type = force_override.unwrap_or(detected_type);
     tracing::info!(target: "guest_attest", detected = ?detected_type, effective = ?eff_type, payload_len = payload.len(), "tee-only payload built");
@@ -1633,6 +1644,53 @@ mod tests {
         let quote_b64 = v["quote"].as_str().unwrap();
         let decoded = URL_SAFE_NO_PAD.decode(quote_b64).unwrap();
         assert_eq!(decoded, td_quote);
+    }
+
+    // Regression: the TEE-only payload used to hardcode an empty runtimeData,
+    // which meant MAA could never re-hash it against the report's report_data
+    // (and any user-data staged into the runtime claims was invisible).
+    #[test]
+    fn build_tee_only_payload_carries_runtime_data_verbatim() {
+        use crate::client::CvmEvidence;
+        use crate::report::CvmReportType;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        // Deliberately not valid JSON: the builder must pass the platform's
+        // bytes through untouched rather than re-serializing them, because
+        // report_data is a hash over these exact bytes.
+        let claims = b"{\"user-data\":\"DEADBEEF\",\"keys\":[]}".to_vec();
+        let evidence = CvmEvidence {
+            report_type: CvmReportType::TdxVmReport,
+            tee_report: vec![0xBB; 64],
+            runtime_claims: None,
+            runtime_data: claims.clone(),
+            platform_quote: vec![0xAA; 100],
+        };
+        let (payload, _) = build_tee_only_payload_from_evidence(&evidence, None).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let rd = v["runtimeData"]["data"].as_str().unwrap();
+        assert!(!rd.is_empty(), "runtimeData must not be empty");
+        assert_eq!(
+            URL_SAFE_NO_PAD.decode(rd).unwrap(),
+            claims,
+            "runtime claims must be forwarded byte-for-byte"
+        );
+        assert_eq!(v["runtimeData"]["dataType"], "JSON");
+    }
+
+    #[test]
+    fn build_tee_only_payload_runtime_data_empty_when_absent() {
+        use crate::client::CvmEvidence;
+        use crate::report::CvmReportType;
+        let evidence = CvmEvidence {
+            report_type: CvmReportType::TdxVmReport,
+            tee_report: vec![0xBB; 64],
+            runtime_claims: None,
+            runtime_data: vec![],
+            platform_quote: vec![0xAA; 100],
+        };
+        let (payload, _) = build_tee_only_payload_from_evidence(&evidence, None).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["runtimeData"]["data"], "");
     }
 
     // -----------------------------------------------------------------------

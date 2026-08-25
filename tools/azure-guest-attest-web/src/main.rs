@@ -937,6 +937,8 @@ async fn api_guest_attest(JsonExtract(req): JsonExtract<GuestAttestRequest>) -> 
         let opts = AttestOptions {
             client_payload: req.client_payload.clone(),
             pcr_selection: req.pcr_indices.clone(),
+            // The web API does not expose user data yet; see CHANGELOG.
+            user_data: None,
         };
 
         let result = match client.attest_guest(provider, Some(&opts)) {
@@ -1011,7 +1013,7 @@ async fn api_tee_attest(JsonExtract(req): JsonExtract<TeeAttestRequest>) -> Json
         let client = AttestationClient::from_tpm(tpm);
         let provider = Provider::maa(&req.endpoint);
 
-        let result = match client.attest_platform(provider) {
+        let result = match client.attest_platform(provider, None) {
             Ok(r) => r,
             Err(e) => return ApiResponse::err(format!("TEE attestation failed: {e}")),
         };

@@ -310,11 +310,17 @@ Commands:
    * For TDX: fetches a TD quote via IMDS.
    * Output defaults to hex; `--base64` switches to standard base64.
 
-* `azure-guest-attest guest-attest [--provider loopback|maa] [--endpoint <MAA_URL>] [--decode] [--show-request]`
+* `azure-guest-attest guest-attest [--provider loopback|maa] [--endpoint <MAA_URL>] [--user-data <DATA>] [--decode] [--show-request]`
    * Collects TPM + TEE evidence, builds a GuestAttestationParameters JSON payload, base64url encodes it and submits to the selected provider.
    * Providers:
       * `loopback` (default): Returns an echo token embedding the request (testing only).
       * `maa`: Calls Microsoft Azure Attestation endpoint (default endpoint currently set to shared WEU sample: `https://sharedweu.weu.attest.azure.net/attest/AzureGuest?api-version=2020-10-01`).
+   * `--user-data <DATA>` (<=64 bytes, same `hex:` / `utf8:` / auto-detect format as
+     `cvm-report`) is staged into the user-data NV index, so the platform carries it as
+     `user-data` in the runtime claims. Since `report_data` is a hash over those claims,
+     the value is covered by the hardware signature.
+      * This differs from `--client-payload`, which is transport-level metadata in the
+        request JSON and is **not** bound to the TEE report. Use `--user-data` for a nonce.
    * `--decode` attempts to parse the returned token as JWT and pretty-print header & payload JSON.
    * `--show-request` prints the original JSON prior to encoding.
 
@@ -345,12 +351,14 @@ The `tee-attest` subcommand performs platform isolation attestation directly aga
 
 Command:
 
-* `azure-guest-attest tee-attest [--endpoint <MAA_PLATFORM_URL>] [--decode] [--show-request] [--force-snp] [--force-tdx]`
+* `azure-guest-attest tee-attest [--endpoint <MAA_PLATFORM_URL>] [--user-data <DATA>] [--decode] [--show-request] [--force-snp] [--force-tdx]`
    * `--endpoint` MAA platform endpoint. Use the TDX or SNP path depending on the detected or desired report type:
       * TDX: `https://<region>.attest.azure.net/attest/TdxVm?api-version=2023-04-01-preview`
       * SNP: `https://<region>.attest.azure.net/attest/SevSnpVm?api-version=2022-08-01`
       (A default TDX shared WEU endpoint is provided if omitted.)
    * The tool auto-detects report type from the CVM report. It warns if the endpoint and detected type mismatch.
+   * `--user-data <DATA>` (<=64 bytes, same format as `cvm-report`) is bound into the TEE
+     report via the runtime claims — see `guest-attest` above for the mechanism.
    * `--decode` Pretty-print JWT header & payload (no signature verification) if the response looks like a JWT.
    * `--show-request` Prints the JSON payload sent to MAA (after IMDS quote / VCEK fetch where applicable).
    * `--force-snp` / `--force-tdx` Override the detected type for testing (does not transform evidence; only affects warnings).

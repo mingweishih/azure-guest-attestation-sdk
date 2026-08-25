@@ -175,6 +175,11 @@ enum Commands {
         /// is auto-selected from the VM's region via IMDS.
         #[arg(long)]
         endpoint: Option<String>,
+        /// Optional user data (<=64 bytes, same format as cvm-report) bound
+        /// into the TEE report via the runtime claims. Unlike --client-payload
+        /// this IS covered by the hardware signature.
+        #[arg(long = "user-data", value_name = "DATA", default_value = "")]
+        user_data: String,
         /// Optional JSON object of key-value pairs to embed (values base64 encoded) in ClientPayload
         #[arg(long, value_name = "JSON", default_value = "{}")]
         client_payload: String,
@@ -200,6 +205,10 @@ enum Commands {
         /// the detected TEE type).
         #[arg(long)]
         endpoint: Option<String>,
+        /// Optional user data (<=64 bytes, same format as cvm-report) bound
+        /// into the TEE report via the runtime claims.
+        #[arg(long = "user-data", value_name = "DATA", default_value = "")]
+        user_data: String,
         /// Decode JWT (header & payload JSON pretty) if token-like
         #[arg(long)]
         decode: bool,
@@ -1072,6 +1081,7 @@ fn main() -> anyhow::Result<()> {
         Commands::GuestAttest {
             provider,
             endpoint,
+            user_data,
             client_payload,
             decode,
             show_request,
@@ -1128,9 +1138,11 @@ fn main() -> anyhow::Result<()> {
             } else {
                 Some(validate_pcr_filter(&pcr_index)?)
             };
+            let ud = parse_user_data_variable(&user_data)?;
             let opts = azure_guest_attestation_sdk::client::AttestOptions {
                 client_payload: Some(client_payload.clone()),
                 pcr_selection,
+                user_data: if ud.is_empty() { None } else { Some(ud) },
             };
             let result = client.attest_guest(prov, Some(&opts))?;
 
@@ -1201,6 +1213,7 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::TeeAttest {
             endpoint,
+            user_data,
             decode,
             force_snp,
             force_tdx,
@@ -1208,6 +1221,12 @@ fn main() -> anyhow::Result<()> {
             json,
         } => {
             let tpm = Tpm::open().map_err(|e| anyhow::anyhow!("Failed to open TPM: {e}"))?;
+            let ud = parse_user_data_variable(&user_data)?;
+            let ud_slice = if ud.is_empty() {
+                None
+            } else {
+                Some(ud.as_slice())
+            };
             use azure_guest_attestation_sdk::report::CvmReportType;
             let override_type = if force_snp {
                 Some(CvmReportType::SnpVmReport)
@@ -1243,6 +1262,7 @@ fn main() -> anyhow::Result<()> {
                     &tpm,
                     &endpoint,
                     override_type,
+                    ud_slice,
                 )?;
             let claims = jwt_payload_value(&token_or_body);
             // A successful platform attestation yields a JWT we can parse.
