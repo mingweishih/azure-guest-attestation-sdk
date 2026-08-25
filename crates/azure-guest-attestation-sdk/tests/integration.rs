@@ -124,6 +124,7 @@ fn attest_guest_loopback_trusted_launch() {
     let opts = AttestOptions {
         pcr_selection: Some(vec![0, 1]),
         client_payload: Some("integration-test-payload".to_string()),
+        user_data: None,
     };
 
     let result = match client.attest_guest(Provider::Loopback, Some(&opts)) {
