@@ -124,6 +124,7 @@ fn attest_guest_loopback_trusted_launch() {
     let opts = AttestOptions {
         pcr_selection: Some(vec![0, 1]),
         client_payload: Some("integration-test-payload".to_string()),
+        user_data: None,
     };
 
     let result = match client.attest_guest(Provider::Loopback, Some(&opts)) {
@@ -155,6 +156,43 @@ fn attest_guest_loopback_trusted_launch() {
     assert_eq!(result.pcrs, vec![0, 1]);
     // Encoded request should be non-empty base64url
     assert!(!result.encoded_request.is_empty());
+}
+
+/// `attest_guest` with `user_data` on a machine that has no CVM report must
+/// fail loudly rather than silently degrading to the TrustedLaunch path.
+///
+/// Falling back would hand the caller a valid-looking token that does not bind
+/// the user data they asked to attest, which is worse than an error. The
+/// reference TPM has no CVM report NV index, so it reproduces exactly that
+/// "no TEE evidence available" condition.
+#[test]
+fn attest_guest_with_user_data_errors_without_cvm_evidence() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => return,
+    };
+
+    let opts = AttestOptions {
+        pcr_selection: Some(vec![0, 1]),
+        client_payload: None,
+        user_data: Some(b"bind-me".to_vec()),
+    };
+
+    match client.attest_guest(Provider::Loopback, Some(&opts)) {
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                msg.contains("user_data"),
+                "error should explain that user_data could not be bound, got: {msg}"
+            );
+        }
+        Ok(result) => panic!(
+            "attest_guest must not silently fall back to TrustedLaunch when user_data \
+             was requested but no CVM evidence exists; it returned a token instead \
+             (request_json = {})",
+            result.request_json
+        ),
+    }
 }
 
 /// `get_cvm_evidence` on a reference TPM fails (no CVM report NV index)
