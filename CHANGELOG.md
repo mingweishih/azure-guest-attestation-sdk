@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reached the relying party. The raw claim bytes are now forwarded verbatim
   (never re-serialized, since the hash covers the exact bytes).
 
+- **User-data staging failures were silently ignored.** `get_cvm_report_raw()`
+  logged a warning and continued when `ensure_user_data_index_and_write()`
+  failed, then read the report anyway. Callers received a valid, hardware-signed
+  report whose runtime claims carried stale or absent user data, with no
+  indication their value had not been bound — a worse outcome than an error,
+  since a relying party would accept the token. Staging failures are now
+  returned as errors. This affects every `user_data` caller, including
+  `cvm-report --user-data` and `tee-report --user-data`.
+
 ### Changed
 
 - **`AttestationClient::attest_platform()` takes an options argument**

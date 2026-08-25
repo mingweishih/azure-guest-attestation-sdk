@@ -327,7 +327,9 @@ pub fn get_cvm_report(
 /// Read the raw CVM report NV index with optional user data staging.
 ///
 /// User data (0..=64 bytes) is zero-padded to 64 bytes before writing to the
-/// NV index. The raw report bytes are returned without parsing.
+/// NV index. Staging failures are returned as errors rather than ignored,
+/// because a report read after a failed write would not bind the requested
+/// user data. The raw report bytes are returned without parsing.
 pub fn get_cvm_report_raw(tpm: &Tpm, user_data: Option<&[u8]>) -> io::Result<Vec<u8>> {
     if let Some(data) = user_data {
         if data.len() > 64 {
@@ -338,9 +340,18 @@ pub fn get_cvm_report_raw(tpm: &Tpm, user_data: Option<&[u8]>) -> io::Result<Vec
         }
 
         let padded = pad_user_data(data);
-        if let Err(e) = ensure_user_data_index_and_write(tpm, &padded) {
-            tracing::warn!(target: "guest_attest", error = %e, "Failed to stage user data into NV index");
-        }
+        // Staging failure must be fatal: the caller's user_data reaches a
+        // relying party only via the runtime claims that the platform derives
+        // from this NV index, and report_data is a hash over those claims.
+        // Continuing here would hand back a perfectly valid report whose
+        // claims carry stale (or no) user data, so the caller would believe a
+        // value was attested that never was.
+        ensure_user_data_index_and_write(tpm, &padded).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("failed to stage user_data into NV index, so it cannot be bound to the report: {e}"),
+            )
+        })?;
     }
 
     tpm.read_nv_index(NV_INDEX_CVM_REPORT)

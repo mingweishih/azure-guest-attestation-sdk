@@ -1654,10 +1654,11 @@ mod tests {
         use crate::client::CvmEvidence;
         use crate::report::CvmReportType;
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        // Deliberately not valid JSON: the builder must pass the platform's
-        // bytes through untouched rather than re-serializing them, because
-        // report_data is a hash over these exact bytes.
-        let claims = b"{\"user-data\":\"DEADBEEF\",\"keys\":[]}".to_vec();
+        // Deliberately non-canonical JSON (padded whitespace): the builder must
+        // pass the platform's bytes through untouched rather than round-tripping
+        // them through serde, because report_data is a hash over these exact
+        // bytes and re-serializing would normalize the spacing and break it.
+        let claims = b"{ \"user-data\" : \"DEADBEEF\" ,  \"keys\" : [ ] }".to_vec();
         let evidence = CvmEvidence {
             report_type: CvmReportType::TdxVmReport,
             tee_report: vec![0xBB; 64],
