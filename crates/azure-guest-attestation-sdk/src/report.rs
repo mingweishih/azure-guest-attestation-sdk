@@ -190,6 +190,41 @@ pub struct RsaJwk {
     pub n: String,
 }
 
+/// Provenance of the VMGS (guest state) file, reported by hosts that support it.
+///
+/// Mirrors `VmgsProvisioner` in openvmm's `openhcl_attestation_protocol`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct VmgsProvisioner {
+    /// VMGS identifier (a GUID, carried on the wire as a string).
+    pub id: String,
+    /// Signer identity: root cert thumbprint plus the leaf subject name,
+    /// expressed as a decentralized identifier.
+    pub signer: String,
+}
+
+/// Hardware sealing policy reported in the runtime claims.
+///
+/// Mirrors `HardwareSealingPolicy` in openvmm's `openhcl_attestation_protocol`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HardwareSealingPolicy {
+    /// No hardware sealing.
+    None,
+    /// Sealed to a measurement hash.
+    Hash,
+    /// Sealed to a signer identity.
+    Signer,
+    /// A policy value this SDK does not know about, preserved verbatim.
+    ///
+    /// Without this catch-all, a policy introduced by a newer platform would
+    /// fail to deserialize, and because [`CvmAttestationReport::parse_with_runtime_claims`]
+    /// treats a claims parse failure as "no claims", the *entire* claims blob
+    /// would silently disappear rather than just this one field.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
 /// VM configuration metadata included in runtime claims.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -204,11 +239,23 @@ pub struct AttestationVmConfig {
     pub root_cert_thumbprint: String,
     /// Whether the serial console is enabled.
     pub console_enabled: bool,
+    /// Whether the serial console, when enabled, is interactive.
+    ///
+    /// Absent on some platforms/host versions; `None` when not reported (which
+    /// is distinct from an explicit `false`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interactive_console_enabled: Option<bool>,
     /// Whether Secure Boot is enabled.
     pub secure_boot: bool,
     /// Whether the vTPM is enabled.
     pub tpm_enabled: bool,
-    /// Whether the vTPM state is persisted.
+    /// Whether the VM is in stateful mode (i.e. attestation is not suppressed).
+    ///
+    /// NOTE: this is a legacy field. Its wire name (`tpm-persisted`) predates
+    /// stateless mode and hardware sealing, and it does *not* describe whether
+    /// vTPM state is actually persisted to the VMGS at runtime — that decision
+    /// is made by the VMM. The name and semantics are preserved to keep the
+    /// runtime-claims contract and the hardware-derived key KDF input stable.
     ///
     /// Absent on some platforms/host versions; `None` when not reported (which
     /// is distinct from an explicit `false`).
@@ -223,6 +270,16 @@ pub struct AttestationVmConfig {
     /// Unique identifier for this VM instance.
     #[serde(rename = "vmUniqueId")]
     pub vm_unique_id: String,
+    /// VMGS provenance data, when the host reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vmgs_provisioner: Option<VmgsProvisioner>,
+    /// Hardware sealing policy.
+    ///
+    /// `None` means the host did not report the field at all (it predates the
+    /// feature), which is distinct from `Some(HardwareSealingPolicy::None)`
+    /// meaning the host explicitly reported that no hardware sealing is in use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_sealing_policy: Option<HardwareSealingPolicy>,
 }
 
 impl CvmAttestationReport {
@@ -331,6 +388,74 @@ mod tests {
         assert_eq!(cfg.root_cert_thumbprint, "");
         assert_eq!(cfg.tpm_persisted, None);
         assert_eq!(cfg.filtered_vpci_devices_allowed, None);
+    }
+
+    #[test]
+    fn parse_report_vm_configuration_with_vmgs_and_sealing_policy() {
+        // Hosts running current OpenHCL emit `interactive-console-enabled`,
+        // `vmgs-provisioner`, and `hardware-sealing-policy`. Field names and
+        // shapes track `AttestationVmConfig` in openvmm's
+        // openhcl_attestation_protocol::igvm_attest::get.
+        let fixed = vec![0u8; size_of::<CvmAttestationReport>() - size_of::<u32>()];
+        let json = br#"{"keys":[],"vm-configuration":{"root-cert-thumbprint":"abc","console-enabled":true,"interactive-console-enabled":true,"secure-boot":true,"tpm-enabled":true,"tpm-persisted":true,"filtered-vpci-devices-allowed":false,"vmUniqueId":"F26C0C6F-BE6B-4DC4-9D41-990911B067C0","vmgs-provisioner":{"id":"6F2626C0-BE6B-4DC4-9D41-990911B067C0","signer":"did:x509:0:sha256:thumb::subject:CN:Contoso"},"hardware-sealing-policy":"signer"},"user-data":"00"}"#;
+        let mut buf = fixed;
+        buf.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        buf.extend_from_slice(json);
+        let (_, claims) = CvmAttestationReport::parse_with_runtime_claims(&buf).expect("parse");
+        let cfg = &claims.expect("claims should be Some").vm_configuration;
+        assert_eq!(cfg.interactive_console_enabled, Some(true));
+        assert_eq!(
+            cfg.hardware_sealing_policy,
+            Some(HardwareSealingPolicy::Signer)
+        );
+        let vmgs = cfg
+            .vmgs_provisioner
+            .as_ref()
+            .expect("vmgs-provisioner should be Some");
+        assert_eq!(vmgs.id, "6F2626C0-BE6B-4DC4-9D41-990911B067C0");
+        assert_eq!(vmgs.signer, "did:x509:0:sha256:thumb::subject:CN:Contoso");
+    }
+
+    #[test]
+    fn parse_report_unknown_sealing_policy_preserved_not_fatal() {
+        // A policy value added by a future platform must not take the whole
+        // claims blob down with it: parse_with_runtime_claims maps a
+        // deserialization failure to `None`, so a strict enum here would
+        // silently discard every claim, not just this field.
+        let fixed = vec![0u8; size_of::<CvmAttestationReport>() - size_of::<u32>()];
+        let json = br#"{"keys":[],"vm-configuration":{"console-enabled":false,"secure-boot":true,"tpm-enabled":true,"vmUniqueId":"","hardware-sealing-policy":"quantum-vault"},"user-data":""}"#;
+        let mut buf = fixed;
+        buf.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        buf.extend_from_slice(json);
+        let (_, claims) = CvmAttestationReport::parse_with_runtime_claims(&buf).expect("parse");
+        let claims = claims.expect("unknown sealing policy must not drop the claims");
+        assert_eq!(
+            claims.vm_configuration.hardware_sealing_policy,
+            Some(HardwareSealingPolicy::Unknown("quantum-vault".to_string()))
+        );
+        // ...and it must round-trip back out as the original wire value.
+        let round = serde_json::to_string(&claims.vm_configuration).expect("serialize");
+        assert!(
+            round.contains(r#""hardware-sealing-policy":"quantum-vault""#),
+            "unknown policy should re-serialize verbatim, got: {round}"
+        );
+    }
+
+    #[test]
+    fn parse_report_absent_sealing_policy_distinct_from_none_policy() {
+        // Distinguishing "host never reported the field" from "host reported
+        // no hardware sealing" matters: the former is an old host, the latter
+        // is a deliberate policy statement.
+        let fixed = vec![0u8; size_of::<CvmAttestationReport>() - size_of::<u32>()];
+        let json = br#"{"keys":[],"vm-configuration":{"console-enabled":false,"secure-boot":true,"tpm-enabled":true,"vmUniqueId":""},"user-data":""}"#;
+        let mut buf = fixed;
+        buf.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        buf.extend_from_slice(json);
+        let (_, claims) = CvmAttestationReport::parse_with_runtime_claims(&buf).expect("parse");
+        let cfg = &claims.expect("claims should be Some").vm_configuration;
+        assert_eq!(cfg.hardware_sealing_policy, None);
+        assert!(cfg.vmgs_provisioner.is_none());
+        assert_eq!(cfg.interactive_console_enabled, None);
     }
 
     #[test]
