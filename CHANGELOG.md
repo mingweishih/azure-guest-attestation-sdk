@@ -22,9 +22,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`azure-guest-local-verify` CLI** — a new tool that verifies attestation
   evidence offline: `tdx <quote>` and `snp <report> --vcek <chain.pem>`, with
   text or `--json` output and exit code 2 on failure. Linux and Windows.
+- **`--user-data` on `guest-attest` and `tee-attest`.** Both subcommands now
+  accept the same `hex:` / `utf8:` / auto-detect format as `cvm-report` and
+  `tee-report` (≤64 bytes). The value is staged into the user-data NV index,
+  so the platform includes it as `user-data` in the runtime claims — and
+  because `report_data` is a hash over those claims, it is covered by the
+  hardware signature.
+  - Note this is **not** the same as `guest-attest --client-payload`, which is
+    transport-level metadata in the request JSON and is not bound to the report.
+  - New `AttestOptions::user_data` and `PlatformAttestOptions::user_data`.
+
+### Fixed
+
+- **TEE-only attestation sent an empty `runtimeData`.** Both
+  `build_tee_only_payload()` and `build_tee_only_payload_from_evidence()`
+  hardcoded `runtime_data = Vec::new()`, so the `runtimeData.data` field in the
+  MAA platform request was always empty even though the runtime claims were
+  available (`CvmEvidence::runtime_data`). MAA re-hashes this blob and compares
+  it against the TEE report's `report_data`, so the binding could not be
+  checked, and anything carried in the claims — including user data — never
+  reached the relying party. The raw claim bytes are now forwarded verbatim
+  (never re-serialized, since the hash covers the exact bytes).
+
+- **User-data staging failures were silently ignored.** `get_cvm_report_raw()`
+  logged a warning and continued when `ensure_user_data_index_and_write()`
+  failed, then read the report anyway. Callers received a valid, hardware-signed
+  report whose runtime claims carried stale or absent user data, with no
+  indication their value had not been bound — a worse outcome than an error,
+  since a relying party would accept the token. Staging failures are now
+  returned as errors. This affects every `user_data` caller, including
+  `cvm-report --user-data` and `tee-report --user-data`.
 
 ### Changed
 
+- **`AttestationClient::attest_platform()` takes an options argument**
+  (`Option<&PlatformAttestOptions>`). Pass `None` for the previous behavior.
+- **`guest_attest::tee_only_attest_platform()` and `build_tee_only_payload()`
+  take a `user_data: Option<&[u8]>` argument.** Pass `None` for the previous
+  behavior.
+- `attest_guest()` now returns an error when `user_data` is requested on a VM
+  with no CVM evidence, instead of silently dropping it.
 - **CLI `--json` `tcb` is derived from the MAA claims for SEV-SNP.** MAA reports
   only the granular SNP SVNs, so the CLI now renders the 8-byte AMD `TCB_VERSION`
   as big-endian hex (e.g. `DB18000000000004`) composed from

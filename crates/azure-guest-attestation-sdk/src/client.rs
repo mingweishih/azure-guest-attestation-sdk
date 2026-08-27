@@ -142,12 +142,36 @@ pub struct CvmEvidenceOptions {
 pub struct AttestOptions {
     /// Client-supplied key/value payload to include in the attestation request.
     /// Each value will be base64-encoded in the outgoing JSON.
+    ///
+    /// This is transport-level metadata: it is **not** bound to the TEE report.
+    /// Use [`user_data`](Self::user_data) for data that must be covered by the
+    /// hardware signature.
     pub client_payload: Option<String>,
     /// PCR indices to include in the quote.
     ///
     /// When `None`, the OS-specific default set is used
     /// (see [`OsInfo::detect`](crate::guest_attest::OsInfo::detect)).
     pub pcr_selection: Option<Vec<u32>>,
+    /// Optional user data (0–64 bytes) to embed in the TEE report.
+    ///
+    /// The value is staged into the user-data NV index, which causes the
+    /// platform to include it as `user-data` in the runtime claims. Because
+    /// the TEE report's `report_data` is a hash over those claims, the value
+    /// ends up covered by the hardware signature.
+    pub user_data: Option<Vec<u8>>,
+}
+
+/// Options for [`AttestationClient::attest_platform`].
+///
+/// TEE-only attestation collects no TPM quote, so there is deliberately no
+/// PCR selection or client payload here — offering them would silently do
+/// nothing.
+#[derive(Debug, Clone, Default)]
+pub struct PlatformAttestOptions {
+    /// Optional user data (0–64 bytes) to embed in the TEE report.
+    ///
+    /// See [`AttestOptions::user_data`]; the mechanism is identical.
+    pub user_data: Option<Vec<u8>>,
 }
 
 /// TEE evidence collected from the CVM hardware.
@@ -527,9 +551,23 @@ impl AttestationClient {
         // 2. Try to collect CVM (TEE) evidence.
         //    TrustedLaunch VMs don't have a CVM report NV index, so
         //    get_cvm_evidence() will fail — treat that as TrustedLaunch.
-        let cvm_evidence = match self.get_cvm_evidence(None) {
+        let cvm_opts = CvmEvidenceOptions {
+            user_data: options.and_then(|o| o.user_data.clone()),
+            ..Default::default()
+        };
+        let cvm_evidence = match self.get_cvm_evidence(Some(&cvm_opts)) {
             Ok(ev) => Some(ev),
             Err(e) => {
+                // If the caller explicitly asked for user data to be bound into
+                // the report, failing to collect TEE evidence means it silently
+                // would not be bound at all. Surface that instead of returning a
+                // token that does not cover the requested value.
+                if cvm_opts.user_data.is_some() {
+                    return Err(SdkError::Parse(format!(
+                        "user_data was requested but no CVM (TEE) evidence is available \
+                         on this VM, so it cannot be bound to a report: {e}"
+                    )));
+                }
                 tracing::info!(target: "guest_attest", error = %e, "No CVM evidence available, treating as TrustedLaunch");
                 None
             }
@@ -576,11 +614,15 @@ impl AttestationClient {
     /// Collects CVM evidence, builds the TEE-only payload (SNP report +
     /// VCEK chain, or TD Quote), and submits directly to a MAA platform
     /// endpoint.
-    pub fn attest_platform(&self, provider: Provider) -> crate::error::Result<AttestResult> {
+    pub fn attest_platform(
+        &self,
+        provider: Provider,
+        options: Option<&PlatformAttestOptions>,
+    ) -> crate::error::Result<AttestResult> {
         // Collect CVM evidence with platform quote support
         let opts = CvmEvidenceOptions {
+            user_data: options.and_then(|o| o.user_data.clone()),
             fetch_platform_quote: true,
-            ..Default::default()
         };
         let cvm_evidence = self.get_cvm_evidence(Some(&opts))?;
 

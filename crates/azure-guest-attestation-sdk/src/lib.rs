@@ -67,7 +67,7 @@ pub mod verify;
 pub use client::{
     AttestOptions, AttestResult, AttestationClient, AttestationReport, CvmEvidence,
     CvmEvidenceOptions, DeviceEvidence, DeviceEvidenceOptions, DeviceType, Endorsement,
-    EndorsementKind, Provider,
+    EndorsementKind, PlatformAttestOptions, Provider,
 };
 pub use error::SdkError;
 pub use parse::TokenClaims;
