@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runtime claims track the current OpenHCL `AttestationVmConfig` contract.**
+  `report::AttestationVmConfig` gained the fields emitted by current hosts but
+  previously dropped on the floor by this SDK:
+  - `interactive_console_enabled` (`interactive-console-enabled`)
+  - `vmgs_provisioner` (`vmgs-provisioner`) — new `report::VmgsProvisioner`
+    carrying the VMGS `id` and `signer`
+  - `hardware_sealing_policy` (`hardware-sealing-policy`) — new
+    `report::HardwareSealingPolicy` (`none` / `hash` / `signer`)
+
+  All three are `Option`, so absence (an older host that predates the field) is
+  distinguishable from an explicitly reported value, matching how
+  `tpm_persisted` and `filtered_vpci_devices_allowed` already behave.
+
+  `HardwareSealingPolicy` carries an `Unknown(String)` catch-all so a policy
+  value introduced by a future platform is preserved verbatim instead of
+  failing to deserialize. That matters because
+  `CvmAttestationReport::parse_with_runtime_claims()` maps a claims
+  deserialization failure to `None`, so a strict enum would have silently
+  discarded the *entire* claims blob over one unrecognized string.
+
+  Field names, shapes, and the `tpm_persisted` legacy-naming caveat follow
+  `AttestationVmConfig` in openvmm's `openhcl_attestation_protocol`
+  (`openhcl/openhcl_attestation_protocol/src/igvm_attest/get.rs`).
+
 - **`--user-data` on `guest-attest` and `tee-attest`.** Both subcommands now
   accept the same `hex:` / `utf8:` / auto-detect format as `cvm-report` and
   `tee-report` (≤64 bytes). The value is staged into the user-data NV index,
