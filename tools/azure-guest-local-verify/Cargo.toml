@@ -1,0 +1,24 @@
+[package]
+name = "azure-guest-local-verify"
+version = "0.1.0"
+description = "CLI for local (offline) verification of Azure CVM attestation evidence"
+
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+
+# Local verification requires the SDK `verify` feature, which implies the
+# `native` backend: OpenSSL on Linux, CNG/crypt32 on Windows. Gate the
+# dependency to those platforms so `cargo build --workspace` stays green
+# elsewhere; the binary reports "unsupported platform" there.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+azure-guest-attestation-sdk = { path = "../../crates/azure-guest-attestation-sdk", version = "0.1.0", default-features = false, features = ["verify"] }
+clap.workspace = true
+
+[lints]
+workspace = true

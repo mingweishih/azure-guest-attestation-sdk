@@ -50,6 +50,10 @@ rustcrypto = ["dep:aes-gcm", "reqwest/rustls-tls", "azure-tpm/rustcrypto"]
 # Used by the shipped CLI so the binary carries no RustCrypto/ring crates.
 # Build with `--no-default-features --features native`.
 native = ["dep:openssl", "reqwest/native-tls", "azure-tpm/native"]
+# Local (offline) DCAP-style attestation verification (ECDSA + X.509 chain
+# validation). Requires the `native` backend: OpenSSL on Linux, CNG/crypt32 on
+# Windows.
+verify = ["native"]
 
 [lints]
 workspace = true

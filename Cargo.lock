@@ -300,6 +300,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "azure-guest-local-verify"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "azure-guest-attestation-sdk",
+ "clap",
+]
+
+[[package]]
 name = "azure-tpm"
 version = "0.1.0"
 dependencies = [

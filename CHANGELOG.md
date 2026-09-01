@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Local (offline) attestation verification** behind a new `verify` feature
+  (requires the `native` backend: OpenSSL on Linux, CNG + crypt32 on Windows).
+  - `verify::verify_snp_report()` validates an AMD SEV-SNP report's VCEK chain
+    to a **pinned AMD ARK root** (Milan, Genoa) and verifies the report
+    signature (ECDSA P-384 / SHA-384).
+  - `verify::verify_td_quote()` validates an Intel TDX ECDSA quote end to end:
+    the body signature (ECDSA P-256), the attestation-key binding to the QE
+    report (`report_data`), the QE report signature (PCK), and the PCK
+    certificate chain to a **pinned Intel SGX Root CA**. QGS `GET_QUOTE_RESP`
+    envelopes (TDX QGS / MigTD) are unwrapped transparently.
+- **`azure-guest-local-verify` CLI** — a new tool that verifies attestation
+  evidence offline: `tdx <quote>` and `snp <report> --vcek <chain.pem>`, with
+  text or `--json` output and exit code 2 on failure. Linux and Windows.
 - **Runtime claims track the current OpenHCL `AttestationVmConfig` contract.**
   `report::AttestationVmConfig` gained the fields emitted by current hosts but
   previously dropped on the floor by this SDK:

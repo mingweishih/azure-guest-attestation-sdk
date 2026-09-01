@@ -147,7 +147,7 @@ mod windows_cng {
             let mode = BCRYPT_CHAIN_MODE_GCM;
             let mode_bytes = pcwstr_bytes(mode);
             status = BCryptSetProperty(
-                alg as *mut core::ffi::c_void,
+                alg,
                 BCRYPT_CHAINING_MODE,
                 mode_bytes.as_ptr(),
                 mode_bytes.len() as u32,
