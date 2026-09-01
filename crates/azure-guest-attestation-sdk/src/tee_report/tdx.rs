@@ -183,6 +183,46 @@ pub struct TdInfoBase {
     pub servd_hash: [u8; 48],
 }
 
+/// Extended TDINFO trailing fields (`tee_info_v1_5_ex_t`) that overlay the
+/// 64-byte [`TdInfo::td_info_extension`] when [`ReportType::version`] is 3
+/// (TD-preserving / Service-TD extended report).
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct TdInfoExtensionV15Ex {
+    /// TD instance statistically-unique ID (preserved across TD-preserving update and migration).
+    pub td_id: [u8; 32],
+    /// Reserved, must be zero.
+    pub _reserved: [u8; 24],
+    /// TD's VMID for the component that requested this report.
+    pub vmid: u8,
+    /// Reserved, must be zero.
+    pub _reserved2: [u8; 3],
+    /// VALID bitmask indicating which extended fields are populated.
+    pub valid: u32,
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<TdInfoExtensionV15Ex>() == 64);
+};
+
+impl TdReport {
+    /// Interpret the 64-byte TDINFO extension as the TDX 1.5 extended
+    /// (Service-TD) fields when [`ReportType::version`] is 3; otherwise `None`.
+    pub fn td_info_extension_v15_ex(&self) -> Option<TdInfoExtensionV15Ex> {
+        if self.report_mac_struct.report_type.version == 3 {
+            // Safety: the source is a 64-byte array and `TdInfoExtensionV15Ex`
+            // is 64 bytes; read unaligned to avoid alignment assumptions.
+            Some(unsafe {
+                core::ptr::read_unaligned(
+                    self.td_info.td_info_extension.as_ptr() as *const TdInfoExtensionV15Ex
+                )
+            })
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +292,28 @@ mod tests {
     #[test]
     fn report_type_layout() {
         assert_eq!(size_of::<ReportType>(), 4);
+    }
+
+    #[test]
+    fn td_info_extension_v15_ex_parses_when_version_3() {
+        let mut report: TdReport = unsafe { core::mem::zeroed() };
+        report.report_mac_struct.report_type.version = 3;
+        report.td_info.td_info_extension[0] = 0xAB; // td_id[0]
+        report.td_info.td_info_extension[56] = 0x05; // vmid
+        report.td_info.td_info_extension[60] = 0x01; // valid (LE u32) = 1
+        let ext = report
+            .td_info_extension_v15_ex()
+            .expect("extended TDINFO present for version 3");
+        assert_eq!(ext.td_id[0], 0xAB);
+        assert_eq!(ext.vmid, 0x05);
+        assert_eq!(ext.valid, 1);
+    }
+
+    #[test]
+    fn td_info_extension_absent_for_non_ex_version() {
+        let mut report: TdReport = unsafe { core::mem::zeroed() };
+        report.report_mac_struct.report_type.version = 0;
+        assert!(report.td_info_extension_v15_ex().is_none());
     }
 
     #[test]

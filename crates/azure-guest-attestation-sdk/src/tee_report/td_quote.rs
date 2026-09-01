@@ -74,8 +74,11 @@ pub const TD_QUOTE_BODY_V1_0_SIZE: usize = size_of::<TdQuoteBodyTdx10>();
 /// Size in bytes of a TDX 1.5 quote body.
 pub const TD_QUOTE_BODY_V1_5_SIZE: usize = size_of::<TdQuoteBodyTdx15>();
 
+/// Size in bytes of a TDX 1.5 *extended* (Service-TD) quote body.
+pub const TD_QUOTE_BODY_V1_5_EX_SIZE: usize = size_of::<TdQuoteBodyTdx15Ex>();
+
 /// Maximum quote body size supported by this module.
-pub const TD_QUOTE_BODY_MAX_SIZE: usize = TD_QUOTE_BODY_V1_5_SIZE;
+pub const TD_QUOTE_BODY_MAX_SIZE: usize = TD_QUOTE_BODY_V1_5_EX_SIZE;
 
 /// Quote body type identifiers for version 5 quotes.
 #[repr(u16)]
@@ -87,6 +90,8 @@ pub enum TdQuoteBodyType {
     Tdx10 = 2,
     /// TDX Module 1.5 report body (TD Quote Body type 3).
     Tdx15 = 3,
+    /// TDX Module 1.5 *extended* Service-TD report body (TD Quote Body type 4).
+    Tdx15Ex = 4,
 }
 
 /// Descriptor header preceding the concrete quote body payload.
@@ -111,6 +116,7 @@ impl TdQuoteBodyType {
             1 => Some(TdQuoteBodyType::SgxFuture),
             2 => Some(TdQuoteBodyType::Tdx10),
             3 => Some(TdQuoteBodyType::Tdx15),
+            4 => Some(TdQuoteBodyType::Tdx15Ex),
             _ => None,
         }
     }
@@ -210,6 +216,43 @@ pub struct TdQuoteBodyTdx15 {
     pub mr_service_td: [u8; 48],
 }
 
+/// TDX quote body for the module version 1.5 *extended* Service-TD report
+/// (body type 4, `sgx_report2_body_v1_5_ex_t`). Emitted for migration /
+/// Service-TD quotes; carries the TD's migration-history fields.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TdQuoteBodyTdx15Ex {
+    /// TDX 1.5 base body fields.
+    pub base: TdQuoteBodyTdx15,
+    /// TD's VMID for the requesting component (0 = unpartitioned TD / L1 VMM).
+    pub vmid: u8,
+    /// TD instance statistically-unique ID (preserved across TD-preserving update and migration).
+    pub td_id: [u8; 32],
+    /// Hash of the Device Information CBOR.
+    pub devinfo: [u8; 48],
+    /// Initial SERVTD_HASH (non-NRX) or migration policy hash (NRX).
+    pub init_server_td_hash: [u8; 48],
+    /// Initial SERVTD_ATTR (non-NRX) or 0 (NRX).
+    pub init_server_td_attr: [u8; 8],
+    /// TD's initial CPUSVN from creation.
+    pub init_cpu_svn: [u8; 16],
+    /// TD's initial TEE_TCB_SVN from creation.
+    pub init_tee_tcb_svn: [u8; 16],
+    /// FMSPC of the model that INIT_TEE_TCB_SVN was captured on.
+    pub init_tee_fmspc: [u8; 12],
+    /// Current SERVTD_HASH (non-NRX) or migration policy hash (NRX).
+    pub curr_server_td_hash: [u8; 48],
+    /// Current SERVTD_ATTR (non-NRX) or 0 (NRX).
+    pub curr_server_td_attr: [u8; 8],
+}
+
+// Lock the wire sizes of the TD quote body layouts (bytes).
+const _: () = {
+    assert!(TD_QUOTE_BODY_V1_0_SIZE == 584);
+    assert!(TD_QUOTE_BODY_V1_5_SIZE == 648);
+    assert!(TD_QUOTE_BODY_V1_5_EX_SIZE == 885);
+};
+
 /// Parsed view over a TDX Quote (version 5).
 #[derive(Debug)]
 pub struct ParsedTdQuote<'a> {
@@ -233,11 +276,14 @@ pub struct ParsedTdQuote<'a> {
 
 /// Quote body variants returned by [`parse_td_quote`].
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum TdQuoteBody<'a> {
     /// TDX Module 1.0 body.
     Tdx10(TdQuoteBodyTdx10),
     /// TDX Module 1.5 body.
     Tdx15(TdQuoteBodyTdx15),
+    /// TDX Module 1.5 extended Service-TD body.
+    Tdx15Ex(TdQuoteBodyTdx15Ex),
     /// Unrecognised body type – returns the raw payload for external handling.
     Unknown {
         /// Body type identifier.
@@ -399,11 +445,64 @@ pub fn parse_td_quote(bytes: &[u8]) -> Result<ParsedTdQuote<'_>, TdQuoteParseErr
     parse_td_quote_with_options(bytes, TdQuoteSignatureMode::Strict)
 }
 
+/// Size in bytes of the QGS message header (`qgs_msg_header_t`).
+const QGS_MSG_HEADER_SIZE: usize = 16;
+/// Fixed prefix of a `qgs_msg_get_quote_resp_t` (header + the two size fields).
+const QGS_GET_QUOTE_RESP_PREFIX_SIZE: usize = QGS_MSG_HEADER_SIZE + 8;
+/// `qgs_msg_type_t::GET_QUOTE_RESP`.
+const QGS_MSG_TYPE_GET_QUOTE_RESP: u32 = 1;
+
+/// If `bytes` is an Intel QGS `GET_QUOTE_RESP` message (`qgs_msg_get_quote_resp_t`)
+/// wrapping a TD quote, return the inner quote slice; otherwise `None`.
+///
+/// This is the container the TDX Quote Generation Service returns and that
+/// MigTD / Service-TD "inbox" tooling writes to disk. Layout (little-endian):
+/// `qgs_msg_header_t { u16 major, u16 minor, u32 type, u32 size, u32 error }`
+/// followed by `u32 selected_id_size, u32 quote_size, u8 id_quote[]`. The
+/// wrapper is accepted only when `type == GET_QUOTE_RESP`, `size` equals the
+/// buffer length, the declared quote fits, and the inner bytes actually begin
+/// with a supported TD quote header — so a coincidental match cannot smuggle in
+/// arbitrary bytes.
+pub fn unwrap_qgs_get_quote_response(bytes: &[u8]) -> Option<&[u8]> {
+    if bytes.len() < QGS_GET_QUOTE_RESP_PREFIX_SIZE {
+        return None;
+    }
+    let le32 = |off: usize| u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+    let msg_type = le32(4);
+    let size = le32(8) as usize;
+    let selected_id_size = le32(16) as usize;
+    let quote_size = le32(20) as usize;
+    if msg_type != QGS_MSG_TYPE_GET_QUOTE_RESP || size != bytes.len() {
+        return None;
+    }
+    let quote_start = QGS_GET_QUOTE_RESP_PREFIX_SIZE.checked_add(selected_id_size)?;
+    let quote_end = quote_start.checked_add(quote_size)?;
+    if quote_end > bytes.len() {
+        return None;
+    }
+    let inner = &bytes[quote_start..quote_end];
+    looks_like_td_quote_header(inner).then_some(inner)
+}
+
+/// Heuristic check that `bytes` begins with a supported TDX/SGX quote header
+/// (recognised version and TEE type). Used to validate a QGS-unwrapped payload.
+fn looks_like_td_quote_header(bytes: &[u8]) -> bool {
+    if bytes.len() < TD_QUOTE_HEADER_V4_SIZE {
+        return false;
+    }
+    let version = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let tee_type = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    matches!(version, 4 | 5) && matches!(tee_type, 0x0000_0000 | 0x0000_0081)
+}
+
 /// Variant of [`parse_td_quote`] that accepts parsing options.
 pub fn parse_td_quote_with_options(
     bytes: &[u8],
     signature_mode: TdQuoteSignatureMode,
 ) -> Result<ParsedTdQuote<'_>, TdQuoteParseError> {
+    // Transparently unwrap a QGS `GET_QUOTE_RESP` envelope (as produced by the
+    // TDX Quote Generation Service and MigTD / Service-TD tooling).
+    let bytes = unwrap_qgs_get_quote_response(bytes).unwrap_or(bytes);
     let mut cursor = 0usize;
 
     let header_base = read_unaligned::<TdQuoteHeaderWireV4>(bytes, &mut cursor, "TD quote header")?;
@@ -483,6 +582,16 @@ pub fn parse_td_quote_with_options(
             }
             TdQuoteBody::Tdx15(read_unaligned_slice::<TdQuoteBodyTdx15>(body_slice))
         }
+        Some(TdQuoteBodyType::Tdx15Ex) => {
+            if body_size != TD_QUOTE_BODY_V1_5_EX_SIZE {
+                return Err(TdQuoteParseError::InvalidBodySize {
+                    body_type: body_header.body_type,
+                    expected: TD_QUOTE_BODY_V1_5_EX_SIZE,
+                    actual: body_size,
+                });
+            }
+            TdQuoteBody::Tdx15Ex(read_unaligned_slice::<TdQuoteBodyTdx15Ex>(body_slice))
+        }
         Some(TdQuoteBodyType::SgxFuture) | None => TdQuoteBody::Unknown {
             body_type: body_header.body_type,
             bytes: body_slice,
@@ -538,6 +647,21 @@ pub fn pretty_td_quote(parsed: &ParsedTdQuote<'_>) -> String {
             append_tdx_body(&mut out, &body.base);
             fmt_hex_block(&mut out, "  tee_tcb_svn_2", &body.tee_tcb_svn_2);
             fmt_hex_block(&mut out, "  mr_service_td", &body.mr_service_td);
+        }
+        TdQuoteBody::Tdx15Ex(body) => {
+            append_tdx_body(&mut out, &body.base.base);
+            fmt_hex_block(&mut out, "  tee_tcb_svn_2", &body.base.tee_tcb_svn_2);
+            fmt_hex_block(&mut out, "  mr_service_td", &body.base.mr_service_td);
+            let _ = writeln!(out, "  vmid: 0x{:02x}", body.vmid);
+            fmt_hex_block(&mut out, "  td_id", &body.td_id);
+            fmt_hex_block(&mut out, "  devinfo", &body.devinfo);
+            fmt_hex_block(&mut out, "  init_server_td_hash", &body.init_server_td_hash);
+            fmt_hex_block(&mut out, "  init_server_td_attr", &body.init_server_td_attr);
+            fmt_hex_block(&mut out, "  init_cpu_svn", &body.init_cpu_svn);
+            fmt_hex_block(&mut out, "  init_tee_tcb_svn", &body.init_tee_tcb_svn);
+            fmt_hex_block(&mut out, "  init_tee_fmspc", &body.init_tee_fmspc);
+            fmt_hex_block(&mut out, "  curr_server_td_hash", &body.curr_server_td_hash);
+            fmt_hex_block(&mut out, "  curr_server_td_attr", &body.curr_server_td_attr);
         }
         TdQuoteBody::Unknown {
             body_type: _,
@@ -641,6 +765,7 @@ fn body_type_label(body_type: u16) -> &'static str {
         Some(TdQuoteBodyType::SgxFuture) => "SGX future body",
         Some(TdQuoteBodyType::Tdx10) => "TDX 1.0",
         Some(TdQuoteBodyType::Tdx15) => "TDX 1.5",
+        Some(TdQuoteBodyType::Tdx15Ex) => "TDX 1.5 (Service-TD ext)",
         None => "unknown",
     }
 }
@@ -1609,6 +1734,155 @@ mod tests {
             rtmr3: [0u8; 48],
             report_data: [0u8; 64],
         }
+    }
+
+    fn zero_tdx15_ex_body() -> TdQuoteBodyTdx15Ex {
+        TdQuoteBodyTdx15Ex {
+            base: TdQuoteBodyTdx15 {
+                base: zero_tdx10_body(),
+                tee_tcb_svn_2: [0u8; 16],
+                mr_service_td: [0u8; 48],
+            },
+            vmid: 0,
+            td_id: [0u8; 32],
+            devinfo: [0u8; 48],
+            init_server_td_hash: [0u8; 48],
+            init_server_td_attr: [0u8; 8],
+            init_cpu_svn: [0u8; 16],
+            init_tee_tcb_svn: [0u8; 16],
+            init_tee_fmspc: [0u8; 12],
+            curr_server_td_hash: [0u8; 48],
+            curr_server_td_attr: [0u8; 8],
+        }
+    }
+
+    /// Minimal well-formed v4 TDX 1.0 quote (empty signature blob).
+    fn minimal_v4_quote() -> Vec<u8> {
+        let header = TdQuoteHeader {
+            version: 4,
+            attestation_key_type: 2,
+            tee_type: 0x0000_0081,
+            qe_svn: 0,
+            pce_svn: 0,
+            qe_vendor_id: [0u8; 16],
+            user_data: [0u8; 20],
+            body_type: 0,
+            body_size: 0,
+        };
+        let mut quote = Vec::new();
+        append_header_bytes(&mut quote, &header);
+        quote.extend_from_slice(as_bytes(&zero_tdx10_body()));
+        quote.extend_from_slice(&0u32.to_le_bytes());
+        quote
+    }
+
+    /// Wrap `quote` in a QGS `GET_QUOTE_RESP` message (selected_id_size = 0).
+    fn wrap_in_qgs_response(quote: &[u8]) -> Vec<u8> {
+        let total = (QGS_GET_QUOTE_RESP_PREFIX_SIZE + quote.len()) as u32;
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&1u16.to_le_bytes()); // major_version
+        msg.extend_from_slice(&1u16.to_le_bytes()); // minor_version
+        msg.extend_from_slice(&QGS_MSG_TYPE_GET_QUOTE_RESP.to_le_bytes()); // type
+        msg.extend_from_slice(&total.to_le_bytes()); // size (whole message)
+        msg.extend_from_slice(&0u32.to_le_bytes()); // error_code
+        msg.extend_from_slice(&0u32.to_le_bytes()); // selected_id_size
+        msg.extend_from_slice(&(quote.len() as u32).to_le_bytes()); // quote_size
+        msg.extend_from_slice(quote);
+        msg
+    }
+
+    #[test]
+    fn qgs_get_quote_response_is_unwrapped_and_parsed() {
+        let quote = minimal_v4_quote();
+        let wrapped = wrap_in_qgs_response(&quote);
+        // Direct unwrap returns the inner quote bytes.
+        assert_eq!(
+            unwrap_qgs_get_quote_response(&wrapped),
+            Some(quote.as_slice())
+        );
+        // The parser transparently unwraps it.
+        let parsed = parse_td_quote(&wrapped).expect("parse QGS-wrapped quote");
+        assert_eq!(parsed.header.version, 4);
+        assert_eq!(parsed.header.tee_type, 0x0000_0081);
+    }
+
+    #[test]
+    fn qgs_unwrap_rejects_size_mismatch() {
+        let mut wrapped = wrap_in_qgs_response(&minimal_v4_quote());
+        // Corrupt the `size` field (offset 8) so it no longer equals the length.
+        wrapped[8] = wrapped[8].wrapping_add(1);
+        assert_eq!(unwrap_qgs_get_quote_response(&wrapped), None);
+    }
+
+    #[test]
+    fn qgs_unwrap_rejects_non_quote_payload() {
+        // A QGS response whose payload is not a TD quote must not be unwrapped.
+        let junk = vec![0xAAu8; 128];
+        let wrapped = wrap_in_qgs_response(&junk);
+        assert_eq!(unwrap_qgs_get_quote_response(&wrapped), None);
+    }
+
+    #[test]
+    fn parse_tdx15_ex_service_td_body() {
+        let header = TdQuoteHeader {
+            version: 5,
+            attestation_key_type: 2,
+            tee_type: 0x0000_0081,
+            qe_svn: 0,
+            pce_svn: 0,
+            qe_vendor_id: [0u8; 16],
+            user_data: [0u8; 20],
+            body_type: TdQuoteBodyType::Tdx15Ex as u16,
+            body_size: TD_QUOTE_BODY_V1_5_EX_SIZE as u32,
+        };
+        let mut body = zero_tdx15_ex_body();
+        body.vmid = 0x07;
+        body.td_id[0] = 0xAB;
+        body.curr_server_td_hash[47] = 0xCD;
+
+        let mut quote = Vec::new();
+        append_header_bytes(&mut quote, &header);
+        quote.extend_from_slice(as_bytes(&body));
+        quote.extend_from_slice(&0u32.to_le_bytes());
+
+        let parsed = parse_td_quote(&quote).expect("parse tdx1.5-ex quote");
+        assert_eq!(parsed.header.version, 5);
+        assert_eq!(
+            parsed.body_header.body_type,
+            TdQuoteBodyType::Tdx15Ex as u16
+        );
+        assert_eq!(parsed.body_header.size as usize, TD_QUOTE_BODY_V1_5_EX_SIZE);
+        match parsed.body {
+            TdQuoteBody::Tdx15Ex(b) => {
+                assert_eq!(b.vmid, 0x07);
+                assert_eq!(b.td_id[0], 0xAB);
+                assert_eq!(b.curr_server_td_hash[47], 0xCD);
+            }
+            other => panic!("expected Tdx15Ex body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_tdx15_ex_rejects_wrong_body_size() {
+        let header = TdQuoteHeader {
+            version: 5,
+            attestation_key_type: 2,
+            tee_type: 0x0000_0081,
+            qe_svn: 0,
+            pce_svn: 0,
+            qe_vendor_id: [0u8; 16],
+            user_data: [0u8; 20],
+            body_type: TdQuoteBodyType::Tdx15Ex as u16,
+            body_size: (TD_QUOTE_BODY_V1_5_EX_SIZE - 1) as u32,
+        };
+        let mut quote = Vec::new();
+        append_header_bytes(&mut quote, &header);
+        quote.extend_from_slice(&vec![0u8; TD_QUOTE_BODY_V1_5_EX_SIZE - 1]);
+        quote.extend_from_slice(&0u32.to_le_bytes());
+        assert!(matches!(
+            parse_td_quote(&quote),
+            Err(TdQuoteParseError::InvalidBodySize { .. })
+        ));
     }
 
     fn der_tlv(tag: u8, content: &[u8]) -> Vec<u8> {
