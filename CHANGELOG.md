@@ -58,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`verify::verify_td_quote()` rejected TDX 1.5 Service-TD extended quotes.**
+  The parser understands `body_type` 4 (`TdQuoteBody::Tdx15Ex`), but the
+  verifier's measurement extraction only matched `Tdx10`/`Tdx15` and fell
+  through to `unsupported TD quote body type`, so real TDX **v5** quotes failed
+  verification after passing every cryptographic check. The remaining catch-all
+  is now an explicit `Unknown` arm, so a future known body type is a compile
+  error here rather than a runtime rejection.
+
 - **TEE-only attestation sent an empty `runtimeData`.** Both
   `build_tee_only_payload()` and `build_tee_only_payload_from_evidence()`
   hardcoded `runtime_data = Vec::new()`, so the `runtimeData.data` field in the

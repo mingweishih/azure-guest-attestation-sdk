@@ -189,7 +189,12 @@ pub(crate) fn verify_td_quote_with_roots(
     let base = match &parsed.body {
         TdQuoteBody::Tdx10(b) => b,
         TdQuoteBody::Tdx15(b) => &b.base,
-        _ => return Err(io::Error::other("unsupported TD quote body type")),
+        TdQuoteBody::Tdx15Ex(b) => &b.base.base,
+        TdQuoteBody::Unknown { body_type, .. } => {
+            return Err(io::Error::other(format!(
+                "unsupported TD quote body type 0x{body_type:04x}"
+            )))
+        }
     };
     let measurements = TdxMeasurements {
         mr_td: base.mr_td,
@@ -221,6 +226,36 @@ mod tests {
     /// A real TDX v4 quote in **raw** form (no QGS `GetQuoteResponse`
     /// envelope), from a different TD. Exercises the non-wrapped input path.
     const RAW_QUOTE: &[u8] = include_bytes!("testdata/tdx_raw_quote.bin");
+
+    /// A real TDX **v5** quote carrying a TDX 1.5 Service-TD extended body
+    /// (`body_type` 4). Regression guard: the verifier previously rejected
+    /// this body type outright even though the parser understood it.
+    const V5_SERVICETD_QUOTE: &[u8] = include_bytes!("testdata/tdx_v5_servicetd_quote.bin");
+
+    #[test]
+    fn verifies_real_v5_service_td_quote() {
+        let res = verify_td_quote(V5_SERVICETD_QUOTE, &TdxVerifyPolicy::default())
+            .expect("v5 Service-TD quote verifies against pinned Intel root");
+        assert!(res.quote_signature_valid);
+        assert!(res.attestation_key_bound);
+        assert!(res.qe_report_signature_valid);
+        assert!(res.pck_chain_valid);
+        let m = &res.measurements;
+        assert_eq!(
+            hex::encode(m.mr_td),
+            "6f3e84c54ac6377614d4c139473db575a83b5db41bd845eecb4eedaf2788ea881309a410c4ceae9641406411f3f639b8"
+        );
+        assert_eq!(
+            hex::encode(m.mr_seam),
+            "55b58ef6b7ba987cceb6cf09c54e333d8d281702e2ca960711b109daf7d26f83309828763d5b403fd22ff8008e3e92d4"
+        );
+        assert_eq!(
+            hex::encode(m.tee_tcb_svn),
+            "0f010400000000000000000000000000"
+        );
+        // `migratable` (bit 29) is set on this TD.
+        assert_eq!(hex::encode(m.td_attributes), "0000023000000000");
+    }
 
     #[test]
     fn verifies_real_raw_tdx_quote() {
