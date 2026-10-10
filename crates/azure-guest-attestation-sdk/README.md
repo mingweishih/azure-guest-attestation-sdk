@@ -105,6 +105,11 @@ See the [SNP verification design](../../doc/snp-verification.md) for supported
 formats, compatibility rules, trust boundaries, and tests, or the
 [design index](../../doc/README.md) for other topics.
 
+For a standalone ID-key/signature check, use
+`verify::verify_snp_id_block(report, certificate_pem, signature_der)`. It does
+not authenticate the SNP report or establish certificate trust. See the
+[ID-block design](../../doc/snp-id-block.md) for the supported input formats.
+
 ## Testing
 
 The SDK ships with comprehensive tests backed by the

@@ -17,7 +17,9 @@ compile_error!("the `verify` feature requires Linux (OpenSSL) or Windows (CNG/cr
 mod crypto;
 mod roots;
 pub mod snp;
+pub mod snp_id_block;
 pub mod tdx;
 
 pub use snp::{verify_snp_report, SnpMeasurements, SnpVerifyPolicy, SnpVerifyResult};
+pub use snp_id_block::{verify_snp_id_block, SnpIdBlockVerifyResult};
 pub use tdx::{verify_td_quote, TdxMeasurements, TdxVerifyPolicy, TdxVerifyResult};

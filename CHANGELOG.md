@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Standalone SNP ID-block verification: match a PEM certificate's AMD-encoded
+  P-384 public key to report `ID_KEY_DIGEST` and verify a DER ECDSA signature
+  over reconstructed ID_BLOCK v1. Exposed as `verify_snp_id_block` and the
+  `snp-id-block` local-verifier command. This does not authenticate the report,
+  establish certificate trust, or authorize the ID key.
+  The existing `snp` command optionally checks the ID block after VCEK report
+  verification with paired `--id-block-certificate`/`--id-block-signature` inputs.
+
 - SNP semantic verification: mandatory exact-length/version/signer/algorithm
   checks and VCEK product-generation, reported-TCB, and HWID bindings, in
   addition to signatures and pinned AMD chain validation. Unsupported or

@@ -65,6 +65,11 @@ pub(crate) fn sha256(data: &[u8]) -> io::Result<Vec<u8>> {
     digest(DigestAlg::Sha256, data)
 }
 
+/// SHA-384 digest of `data`.
+pub(crate) fn sha384(data: &[u8]) -> io::Result<Vec<u8>> {
+    digest(DigestAlg::Sha384, data)
+}
+
 /// Parse a buffer of one or more concatenated PEM certificates, leaf first.
 pub(crate) fn parse_pem_chain(pem: &[u8]) -> io::Result<Vec<Cert>> {
     let blocks = pem_blocks(pem)?;

@@ -56,6 +56,23 @@ mod imp {
             /// Path to the VCEK certificate chain (PEM: VCEK, ASK[, ARK]).
             #[arg(long)]
             vcek: PathBuf,
+            /// PEM X.509 ID-key certificate; requires --id-block-signature.
+            #[arg(long, requires = "id_block_signature")]
+            id_block_certificate: Option<PathBuf>,
+            /// DER ID-block signature; requires --id-block-certificate.
+            #[arg(long, requires = "id_block_certificate")]
+            id_block_signature: Option<PathBuf>,
+        },
+        /// Check ID_KEY_DIGEST and an ID-block v1 signature, not the report's authenticity.
+        SnpIdBlock {
+            /// Raw SNP report containing the ID-block fields.
+            report: PathBuf,
+            /// One PEM X.509 certificate containing the P-384 ID public key.
+            #[arg(long)]
+            certificate: PathBuf,
+            /// DER-encoded ECDSA-P384/SHA384 signature over the ID-block payload.
+            #[arg(long)]
+            signature: PathBuf,
         },
     }
 
@@ -71,6 +88,7 @@ mod imp {
 
     pub fn run() -> Result<()> {
         let cli = Cli::parse();
+        let mut report_signature_checked = false;
         let (tee, result): (&str, Result<Report, std::io::Error>) =
             match &cli.command {
                 Command::Tdx { quote } => {
@@ -99,34 +117,80 @@ mod imp {
                         });
                     ("tdx", r)
                 }
-                Command::Snp { report, vcek } => {
+                Command::Snp {
+                    report,
+                    vcek,
+                    id_block_certificate,
+                    id_block_signature,
+                } => {
                     let result = (|| {
                         let rep = std::fs::read(report)?;
                         let chain = std::fs::read(vcek)?;
-                        verify::verify_snp_report(&rep, &chain, &verify::SnpVerifyPolicy::default())
-                            .map(|r| Report {
-                                checks: vec![
-                                    ("VCEK chain -> AMD ARK root", r.chain_valid),
-                                    ("report signature", r.signature_valid),
-                                    ("VCEK report binding", r.vcek_binding_valid),
-                                ],
-                                fields: vec![
-                                    ("measurement", hex(&r.measurements.measurement)),
-                                    ("report_data", hex(&r.measurements.report_data)),
-                                    (
-                                        "reported_tcb",
-                                        format!("{:016x}", r.measurements.reported_tcb),
-                                    ),
-                                    ("chip_id", hex(&r.measurements.chip_id)),
-                                ],
-                            })
+                        let verified = verify::verify_snp_report(
+                            &rep,
+                            &chain,
+                            &verify::SnpVerifyPolicy::default(),
+                        )?;
+                        report_signature_checked = true;
+                        let mut output = Report {
+                            checks: vec![
+                                ("VCEK chain -> AMD ARK root", verified.chain_valid),
+                                ("report signature", verified.signature_valid),
+                                ("VCEK report binding", verified.vcek_binding_valid),
+                            ],
+                            fields: vec![
+                                ("measurement", hex(&verified.measurements.measurement)),
+                                ("report_data", hex(&verified.measurements.report_data)),
+                                (
+                                    "reported_tcb",
+                                    format!("{:016x}", verified.measurements.reported_tcb),
+                                ),
+                                ("chip_id", hex(&verified.measurements.chip_id)),
+                            ],
+                        };
+                        match (id_block_certificate, id_block_signature) {
+                            (Some(certificate), Some(signature)) => {
+                                add_id_block_checks(&mut output, &rep, certificate, signature)?;
+                            }
+                            (None, None) => {}
+                            _ => {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidInput,
+                                    "both ID-block certificate and signature are required",
+                                ))
+                            }
+                        }
+                        Ok(output)
                     })();
-                    ("snp", result)
+                    (
+                        if id_block_certificate.is_some() {
+                            "snp-with-id-block"
+                        } else {
+                            "snp"
+                        },
+                        result,
+                    )
+                }
+                Command::SnpIdBlock {
+                    report,
+                    certificate,
+                    signature,
+                } => {
+                    let result = (|| {
+                        let report = read_id_block_input(report, 1184)?;
+                        let mut output = Report {
+                            checks: Vec::new(),
+                            fields: Vec::new(),
+                        };
+                        add_id_block_checks(&mut output, &report, certificate, signature)?;
+                        Ok(output)
+                    })();
+                    ("snp-id-block", result)
                 }
             };
 
         let passed = result.is_ok();
-        emit(cli.json, tee, &result);
+        emit(cli.json, tee, &result, report_signature_checked);
         if passed {
             Ok(())
         } else {
@@ -134,13 +198,63 @@ mod imp {
         }
     }
 
-    fn emit(json: bool, tee: &str, result: &Result<Report, std::io::Error>) {
-        if json && tee == "snp" {
+    fn add_id_block_checks(
+        output: &mut Report,
+        report: &[u8],
+        certificate: &std::path::Path,
+        signature: &std::path::Path,
+    ) -> std::io::Result<()> {
+        let certificate = read_id_block_input(certificate, 64 * 1024)?;
+        let signature = read_id_block_input(signature, 104)?;
+        let result = verify::verify_snp_id_block(report, &certificate, &signature)?;
+        output.checks.extend([
+            ("ID key digest binding", result.id_key_digest_valid),
+            ("ID-block signature", result.id_block_signature_valid),
+        ]);
+        output.fields.extend([
+            ("id_key_digest", hex(&result.id_key_digest)),
+            ("id_block_payload", hex(&result.id_block_payload)),
+        ]);
+        Ok(())
+    }
+
+    fn read_id_block_input(path: &std::path::Path, limit: u64) -> std::io::Result<Vec<u8>> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(limit + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ID-block input exceeds size limit",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn emit(
+        json: bool,
+        tee: &str,
+        result: &Result<Report, std::io::Error>,
+        report_signature_checked: bool,
+    ) {
+        let id_block = tee == "snp-id-block";
+        let combined = tee == "snp-with-id-block";
+        let snp = tee == "snp" || id_block || combined;
+        if json && snp {
             let mut output = serde_json::json!({
                 "tee": "snp", "passed": result.is_ok(),
-                "verification_scope": "structure_signature_chain_and_vcek_binding",
+                "verification_scope": if id_block { "id_key_digest_and_id_block_signature" } else if combined { "structure_signature_chain_and_vcek_binding_and_id_block" } else { "structure_signature_chain_and_vcek_binding" },
                 "policy_checked": false, "crl_checked": false, "cpuid_stepping_checked": false,
             });
+            if id_block || combined {
+                output["report_signature_checked"] = serde_json::json!(report_signature_checked);
+                output["id_block_checked"] = serde_json::json!(result.is_ok());
+                output["certificate_trust_checked"] = serde_json::json!(false);
+                output["author_key_checked"] = serde_json::json!(false);
+                output["id_block_version"] = serde_json::json!(1);
+            }
             match result {
                 Ok(report) => {
                     output["checks"] = serde_json::Value::Object(
@@ -198,6 +312,22 @@ mod imp {
             println!("  policy_checked: false; CRL and CPUID stepping equivalence: not checked");
             println!("  REPORTDATA, measurement, TCB minimums and migration authorization require caller policy.");
         }
+        if combined {
+            println!(
+                "  verification_scope: structure_signature_chain_and_vcek_binding_and_id_block"
+            );
+            println!(
+                "  report_signature_checked: {report_signature_checked}; id_block_checked: {}",
+                result.is_ok()
+            );
+            println!("  ID certificate trust, author key, policy and revocation: not checked");
+        }
+        if id_block {
+            println!("  verification_scope: id_key_digest_and_id_block_signature");
+            println!("  id_block_version: 1");
+            println!("  report_signature_checked: false; certificate_trust_checked: false; author_key_checked: false");
+            println!("  Standalone key/signature check only. Authenticate the SNP report and authorize the ID key separately.");
+        }
         match result {
             Ok(rep) => {
                 println!("{} verification: PASSED", tee.to_uppercase());
@@ -211,7 +341,7 @@ mod imp {
             }
             Err(e) => {
                 eprintln!("{} verification: FAILED", tee.to_uppercase());
-                if tee == "snp" {
+                if snp {
                     eprintln!("  reason: {}", snp_error(e).1);
                 } else {
                     eprintln!("  reason: {e}");
@@ -237,6 +367,53 @@ mod imp {
                 "verification_failed",
                 "Signature, certificate-chain, or verification-time validation failed",
             ),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn id_block_checks_append_without_replacing_existing_results() {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/azure-guest-attestation-sdk/src/verify/testdata");
+            let report = std::fs::read(root.join("snp_id_block_report.bin")).unwrap();
+            let mut output = Report {
+                checks: vec![("existing check", true)],
+                fields: vec![("existing field", "unchanged".into())],
+            };
+            add_id_block_checks(
+                &mut output,
+                &report,
+                &root.join("snp_id_block_cert.pem"),
+                &root.join("snp_id_block_signature.der"),
+            )
+            .unwrap();
+            assert_eq!(
+                output.checks,
+                vec![
+                    ("existing check", true),
+                    ("ID key digest binding", true),
+                    ("ID-block signature", true)
+                ]
+            );
+            assert_eq!(output.fields[0], ("existing field", "unchanged".into()));
+            assert_eq!(output.fields[1].0, "id_key_digest");
+            assert_eq!(output.fields[2].0, "id_block_payload");
+            let original_checks = output.checks.clone();
+            let original_fields = output.fields.clone();
+            let mut tampered = report;
+            tampered[0x90] ^= 1;
+            assert!(add_id_block_checks(
+                &mut output,
+                &tampered,
+                &root.join("snp_id_block_cert.pem"),
+                &root.join("snp_id_block_signature.der")
+            )
+            .is_err());
+            assert_eq!(output.checks, original_checks);
+            assert_eq!(output.fields, original_fields);
         }
     }
 }

@@ -32,6 +32,13 @@ pub(crate) fn sha256(data: &[u8]) -> io::Result<Vec<u8>> {
         .to_vec())
 }
 
+/// SHA-384 digest of `data`.
+pub(crate) fn sha384(data: &[u8]) -> io::Result<Vec<u8>> {
+    Ok(hash(MessageDigest::sha384(), data)
+        .map_err(|error| other("sha384", error))?
+        .to_vec())
+}
+
 /// Parse a buffer of one or more concatenated PEM certificates, leaf first.
 pub(crate) fn parse_pem_chain(pem: &[u8]) -> io::Result<Vec<Cert>> {
     Ok(X509::stack_from_pem(pem)

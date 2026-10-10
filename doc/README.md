@@ -10,6 +10,7 @@ compatibility decisions, and verification strategy.
 |---|---|
 | Workspace layers, modules, and attestation flows | [Architecture overview](../ARCHITECTURE.md) |
 | Offline SNP report verification and VCEK binding | [SNP verification](snp-verification.md) |
+| Standalone SNP ID-key digest and ID-block signature verification | [SNP ID block](snp-id-block.md) |
 
 ## Maintaining These Pages
 
